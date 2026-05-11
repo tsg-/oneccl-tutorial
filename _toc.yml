@@ -1,0 +1,28 @@
+format: jb-book
+root: intro
+
+parts:
+  - caption: "Concepts"
+    chapters:
+      - file: chapters/00_foundations
+        title: "From First Principles: Collective Communication"
+      - file: chapters/01_overview
+      - file: chapters/02_topology
+      - file: chapters/03_when_to_use
+
+  - caption: "Hands-On Walkthroughs"
+    chapters:
+      - file: notebooks/02_environment_setup
+      - file: notebooks/03a_allreduce_walkthrough
+        title: "Allreduce -- TP Decode Hot Path"
+      - file: notebooks/03b_allgather
+        title: "Allgather -- Sequence Parallelism"
+      - file: notebooks/03c_alltoall_moe
+        title: "Alltoall -- MoE Expert Routing"
+      - file: notebooks/04_inference_tp_decode
+        title: "End-to-End: TP Decode Loop"
+
+  - caption: "Reference"
+    chapters:
+      - file: chapters/perf_tuning
+      - file: chapters/nixl_boundary

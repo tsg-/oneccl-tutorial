@@ -1,0 +1,40 @@
+title: "oneCCL: Collective Communications for Inference"
+author: "Intel AI Group -- CCO Team"
+# logo: _static/intel_logo.png   # add logo file here when available
+
+repository:
+  url: https://github.com/tsg-/oneccl-tutorial
+  branch: main
+  path_to_book: .
+
+execute:
+  execute_notebooks: "off"        # flip to "auto" on DevCloud / JupyterHub
+  timeout: 120
+
+parse:
+  myst_enable_extensions:
+    - colon_fence
+    - deflist
+    - tasklist
+    - html_admonition
+
+html:
+  use_repository_button: true
+  use_issues_button: false
+  use_edit_page_button: false
+  extra_navbar: ""
+  home_page_in_navbar: true
+  comments:
+    hypothesis: false
+
+sphinx:
+  extra_extensions:
+    - sphinx_copybutton
+    - sphinx_togglebutton
+  config:
+    html_theme: "sphinx_book_theme"
+    html_theme_options:
+      primary_sidebar_end: []
+      show_toc_level: 2
+    copybutton_prompt_text: ">>> |\\$ |\\[\\d+\\]: "
+    copybutton_prompt_is_regexp: true

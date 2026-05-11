@@ -1,0 +1,5 @@
+jupyter-book>=0.15
+sphinx-copybutton
+sphinx-togglebutton
+matplotlib
+numpy
