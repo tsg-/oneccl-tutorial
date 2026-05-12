@@ -41,5 +41,7 @@ sphinx:
       primary_sidebar_end: []
       show_toc_level: 2
     html_baseurl: "https://tsg-.github.io/oneccl-tutorial/"
+    copyright: ""
+    html_show_copyright: false
     copybutton_prompt_text: ">>> |\\$ |\\[\\d+\\]: "
     copybutton_prompt_is_regexp: true
