@@ -1,72 +1,35 @@
 # GPU Hardware Constraints
 
-This chapter documents the hardware-level constraints that shape how oneCCL
-implements collectives on CRI (Crescent Island, Xe3) — and provides historical
-context from PVC (Ponte Vecchio, Xe-HPC) which introduced similar challenges.
+This chapter explains the hardware-level constraints that shape how oneCCL
+implements collectives on Intel Xe GPUs, focusing on CRI (Crescent Island, Xe3)
+with context from PVC (Ponte Vecchio, Xe-HPC).
 
 ---
 
-## The Two Constraints That Matter
+## The Two Constraints that Matter
 
 | Constraint | PVC (Xe-HPC, 2022) | CRI (Xe3, 2026) |
 |---|---|---|
-| Intra-node GPU fabric | Xe Link (high-BW coherent) | **None — PCIe only** |
+| Intra-node GPU fabric | Xe Link (high-BW coherent) | **None, PCIe only** |
 | GPU-initiated network I/O | No | No |
 | NIC-to-GPU DMA (HMEM/dmabuf) | Experimental (`CCL_ATL_HMEM=1`) | Experimental (`CCL_ATL_HMEM=1`) |
 | `offload` mode (Xe Link RDMA) | Yes (intra-node only) | No (no fabric) |
 | **Scaleout default** | **Host-staged** | **Host-staged** |
 
-**CRI is more constrained than PVC** in topology: PVC had Xe Link for fast intra-node
-GPU-to-GPU transfers (used on systems like Aurora with 6 GPUs per node) and could use
-`offload` mode for send/recv over that fabric. CRI has no GPU fabric — every GPU-to-GPU
-transfer, even within the same node, traverses PCIe and potentially UPI.
+Neither PVC nor CRI can autonomously post network operations from GPU kernels.
+The host CPU always orchestrates every send/recv to the NIC. In standard
+deployments, all inter-node (scaleout) traffic is copied through host memory.
+This is the primary scalability limitation of Intel Xe GPUs compared to NVIDIA
+GPUDirect RDMA, which has been production-grade for over a decade.
 
-Neither generation supports **GPU-initiated network I/O** — the GPU cannot autonomously
-post sends or receives to the NIC. The host CPU always orchestrates the transfer.
+The term "GPU Direct" covers a spectrum of capabilities:
 
-Both generations have an **experimental** path for NIC-to-GPU DMA via `CCL_ATL_HMEM=1`
-(the NIC reads/writes GPU memory directly via dmabuf). However, this is **off by
-default and not production-validated**. In standard deployments, all inter-node
-(scaleout) traffic is host-staged — this is the primary scalability limitation of
-Intel Xe GPUs compared to NVIDIA's production-grade GPUDirect RDMA.
-
-### CRI in oneCCL Source
-
-oneCCL recognizes CRI as device ID `0x6740` (device family `family8`). It is classified
-as an "arc card" and uses SYCL kernel-based algorithms with PCIe-oriented code paths.
-CRI is **not** in the `should_disable_rdma()` blocklist — all GPU RDMA mechanisms
-(HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available. The AOT compilation targets
-include `xe3` alongside `pvc` and `xe2`.
-
----
-
-## GPU-Initiated Network I/O: Absent on CRI
-
-The term "GPU Direct" covers a spectrum of capabilities. The critical distinction is
-who **initiates** the network transfer:
-
-| Capability | Description | NVIDIA | PVC (Xe-HPC) | CRI (Xe3) |
-|---|---|---|---|---|
-| **GPU-initiated network I/O** | GPU kernel autonomously posts RDMA sends/receives to NIC | Yes (GPUDirect Async) | No | No |
-| **NIC-to-GPU DMA (host-orchestrated)** | NIC reads/writes GPU memory via PCIe; host CPU sets up transfers | Yes (GPUDirect RDMA) | Experimental (HMEM) | Experimental (HMEM) |
-| **GPU-to-GPU P2P DMA** | One GPU's copy engine reads another GPU's memory | Yes (NVLink / PCIe) | Yes (Xe Link + PCIe) | PCIe only |
-| **GPU RDMA offload** | Library offloads send/recv to device-side agent | Yes | Xe Link only (`offload` mode) | No (no fabric) |
-
-On NVIDIA hardware, a GPU kernel can **autonomously** initiate network operations — no
-host CPU involvement after setup. On Intel Xe (both PVC and CRI), the host CPU must
-orchestrate every network transfer. The GPU can perform local DMA (copy engines for P2P),
-but cannot issue commands to the NIC.
-
-oneCCL has an **experimental** path for NIC-to-GPU DMA on both PVC and CRI via the HMEM
-mechanism (`CCL_ATL_HMEM=1`). When enabled, the NIC reads/writes GPU memory directly
-(via libfabric `FI_HMEM_ZE` backed by Linux dmabuf), eliminating the host staging buffer
-on the data path. The host CPU still initiates the transfer, but data does not transit
-through host memory. This is **off by default** — see
-[NIC-to-GPU DMA via HMEM](#nic-to-gpu-dma-via-hmem-ccl_atl_hmem--experimental) for details.
-
-PVC with Xe Link additionally supports `offload` mode for send/recv, where the library
-uses Xe Link fabric for intra-node transfers without host staging. CRI lacks this — no
-fabric means no `offload` path for intra-node communication.
+| Capability | NVIDIA | PVC (Xe-HPC) | CRI (Xe3) |
+|---|---|---|---|
+| **GPU-initiated network I/O** | Yes (GPUDirect Async) | No | No |
+| **NIC-to-GPU DMA (host-orchestrated)** | Yes (GPUDirect RDMA) | Experimental (HMEM) | Experimental (HMEM) |
+| **GPU-to-GPU P2P DMA** | Yes (NVLink / PCIe) | Yes (Xe Link + PCIe) | PCIe only |
+| **GPU RDMA offload** | Yes | Xe Link only (`offload` mode) | No (no fabric) |
 
 On CRI, the GPU has no path to initiate network I/O:
 
@@ -92,25 +55,20 @@ On CRI, the GPU has no path to initiate network I/O:
   With HMEM (experimental): NIC reads/writes GPU memory directly.
 ```
 
-This means:
+### CRI in oneCCL Source
 
-1. **The host CPU is always on the critical path** — it must post every send/recv
-   to the NIC (no GPU-initiated network I/O)
-2. **In production (default config):** every scaleout collective requires a
-   GPU→host copy before network transfer, and host→GPU copy after arrival
-3. **With HMEM (experimental):** NIC reads/writes GPU memory directly, skipping
-   host DRAM — but this path is not validated for production use
-
-This host-staging requirement is the **primary scaleout bottleneck** on both PVC
-and CRI. It adds 2-5 µs per collective and limits effective cross-node bandwidth
-to what the PCIe link between GPU and host can sustain.
+oneCCL recognizes CRI as device ID `0x6740` (device family `family8`). It is classified
+as an "arc card" and uses SYCL kernel-based algorithms with PCIe-oriented code paths.
+CRI is **not** in the `should_disable_rdma()` blocklist, so all GPU RDMA mechanisms
+(HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available. The AOT compilation targets
+include `xe3` alongside `pvc` and `xe2`.
 
 ---
 
 ## CRI vs PVC: Absence of Intra-Node Fabric
 
 PVC systems (e.g., Aurora) use Xe Link to form a high-bandwidth mesh between GPUs
-within a node. The `topo` algorithm's scale-up phase exploits this:
+within a node. CRI has no equivalent:
 
 ```
 PVC with Xe Link (Aurora-class):
@@ -123,17 +81,17 @@ CRI without fabric:
 ```
 
 On CRI, even the **scale-up phase** (intra-node) is constrained:
-- No direct GPU-to-GPU path exists
+- No direct GPU-to-GPU path exists without going through PCIe
 - Level Zero IPC handles enable P2P DMA over PCIe, but bandwidth is limited
 - Cross-socket GPU pairs traverse UPI, adding latency and contention
-- This is why NUMA pinning is the single biggest performance lever on CRI
+- NUMA pinning is the single biggest performance lever on CRI for this reason
 
 ---
 
-## The `topo` Algorithm: Host-Staged Hierarchical Communication
+## The topo Algorithm: Host-Staged Hierarchical Communication
 
-The `topo` algorithm is oneCCL's solution for GPU hardware without direct network access.
-It splits every collective into phases:
+The `topo` algorithm is oneCCL's default for GPU buffers. It splits every
+collective into phases:
 
 ```
 Scale-up phase (intra-node):
@@ -173,134 +131,17 @@ For a 2-node allreduce with TP=4 per node, the full data flow:
   └───────────────────────────┘       └───────────────────────────┘
 ```
 
-This is why `CCL_ALLREDUCE=topo` (the default) must remain set for GPU buffers.
+`CCL_ALLREDUCE=topo` (the default) must remain set for GPU buffers.
 Setting any other value (e.g., `ring`) tells oneCCL to copy the **entire** buffer
-to host memory and run a CPU-side algorithm — losing even the PCIe P2P scale-up path.
-
----
-
-## Copy Engines vs Compute Kernels
-
-CRI has dedicated **copy engines** separate from the compute EUs:
-
-| Engine | What It Does | When Used |
-|---|---|---|
-| Main copy engine | General DMA: GPU↔host, GPU↔GPU (P2P over PCIe) | Default for all transfers |
-| Link copy engine | Dedicated to P2P over fabric links | Only with Xe Link (not on CRI) |
-| Compute EUs | GEMM, attention, etc. | Not used for communication |
-
-On CRI (no Xe Link), only the main copy engine is available for P2P. The link
-copy engine has no fabric to drive.
-
-Relevant variables:
-
-```bash
-# Which copy engine to use (CRI: only 'main' is useful)
-export CCL_ZE_COPY_ENGINE=main
-
-# Monolithic pipeline kernel: fuses reduce-scatter into a single kernel submission
-# Reduces command queue overhead for small messages
-export CCL_REDUCE_SCATTER_MONOLITHIC_PIPELINE_KERNEL=1
-```
-
-The copy engine operates concurrently with compute EUs. This means oneCCL can
-overlap the PCIe DMA (for the next layer's collective) with the current layer's
-GEMM — but only if collectives are issued asynchronously (see `async_op=True`
-pattern in [notebook 04](../notebooks/04_inference_tp_decode)).
-
-```
-Timeline (async_op=True, double-buffered):
-
-              Layer N          Layer N+1        Layer N+2
-              ─────────────    ─────────────    ─────────────
-Compute EUs:  ████ GEMM N ███  ████ GEMM N+1█  ████ GEMM N+2█
-Copy Engine:     ░░░ allreduce N-1 ░░░░
-                               ░░░ allreduce N ░░░░
-                                                ░░░ allreduce N+1 ░░░░
-              ├──────────────┤├──────────────┤├──────────────┤
-                             ▲               ▲
-                 compute and DMA overlap     no stalls — GPU always busy
-
-
-Timeline (sync, no overlap — DEFAULT without async_op):
-
-              Layer N       wait   Layer N+1     wait   Layer N+2
-              ───────────── ────── ───────────── ────── ─────────
-Compute EUs:  ████ GEMM N █        ████ GEMM N+1        ████ GEMM █
-Copy Engine:               ░░ AR N ░░           ░░AR N+1░░
-              ├─────────────┤├─────┤├────────────┤├─────┤
-                            ▲ STALL ▲            ▲ STALL▲
-                   GPU idle while allreduce completes
-```
-
-The async path hides communication latency behind compute. For decode (small GEMMs,
-~50 µs), the overlap window is tight — communication must complete within one layer's
-compute time or it stalls the next layer.
-
----
-
-## P2P Access and Atomics
-
-oneCCL's topology manager probes P2P capabilities at init time:
-
-```
-check_p2p_access():
-  For each GPU pair, test if Level Zero IPC memory handles work.
-  On CRI: P2P works within a node via PCIe (no fabric).
-  Cross-node: no P2P — must use host staging.
-
-check_p2p_atomics():
-  Test if GPU atomic operations work across devices.
-  Xe GPUs: atomics across devices may not work reliably over PCIe.
-  oneCCL falls back to non-atomic paths when this check fails.
-```
-
-The result is a P2P connectivity matrix like:
-
-```
-P2P Connectivity Matrix (CRI 4-GPU node, 2 sockets):
-
-         GPU0   GPU1   GPU2   GPU3
-GPU0      -     PCIe   UPI    UPI     Socket 0: GPU0, GPU1
-GPU1    PCIe     -     UPI    UPI     Socket 1: GPU2, GPU3
-GPU2    UPI    UPI      -     PCIe
-GPU3    UPI    UPI    PCIe     -
-
-Legend:
-  PCIe = same-socket P2P via PCIe root complex (~25-32 GB/s)
-  UPI  = cross-socket P2P via UPI bridge (~10-15 GB/s under load)
-
-If IOMMU or ACS blocks P2P:
-
-         GPU0   GPU1   GPU2   GPU3
-GPU0      -     HOST   HOST   HOST    All pairs fall back to
-GPU1    HOST     -     HOST   HOST    host-staged copy (~5-10 GB/s)
-GPU2    HOST   HOST     -     HOST
-GPU3    HOST   HOST   HOST     -
-```
-
-If P2P access fails (e.g., due to IOMMU misconfiguration or missing
-`/dev/dri/renderD*` permissions), oneCCL falls back entirely to host-staged
-communication even for intra-node transfers — a significant performance loss.
-
-**Verify P2P is working:**
-```bash
-# Check that Level Zero sees all GPUs and can open IPC handles
-CCL_LOG_LEVEL=info mpirun -n 4 python -c "
-import torch.distributed as dist
-import oneccl_bindings_for_pytorch
-dist.init_process_group(backend='ccl')
-dist.destroy_process_group()
-" 2>&1 | grep -i "p2p\|ipc\|access"
-```
+to host memory and run a CPU-side algorithm, losing even the PCIe P2P scale-up path.
 
 ---
 
 ## Scaleout Limitation: Host Staging Is the Default
 
 Both PVC and CRI **always host-stage inter-node traffic by default**. This is the
-scalability limitation you will encounter in production. oneCCL has two algorithm
-families, and both default to host staging:
+scalability wall in production. oneCCL has two algorithm families, and both default
+to host staging:
 
 **1. The `topo` algorithm (default for GPU buffers):**
 
@@ -326,16 +167,16 @@ if (should_disable_rdma(ze_dev) || atl_transport == ccl_atl_ofi) {
 The comment in `sycl_coll_base.cpp` at `check_mpi_supports_rdma()` states:
 `"ofi collective only supports host memory"`.
 
-**Why OFI can't do GPU RDMA in the SYCL kernel path:** The SYCL scaleout kernels
+**Why OFI cannot do GPU RDMA in the SYCL kernel path:** The SYCL scaleout kernels
 use direct `atl_comm->allreduce()` calls from a host task. The OFI ATL layer's
 collective implementation does not use HMEM MR registration for these internal
-collective calls — it only handles point-to-point sends/recvs with HMEM. The
+collective calls. It only handles point-to-point sends/recvs with HMEM. The
 collective-level ATL calls always expect host-accessible buffers.
 
 **Result:** `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` only works with **MPI transport**
 (requires `I_MPI_OFFLOAD=2` with Intel MPI, or MPICH with
-`MPIR_CVAR_CH4_OFI_ENABLE_HMEM=1`). OFI transport — the recommended transport
-for inference — cannot use this path.
+`MPIR_CVAR_CH4_OFI_ENABLE_HMEM=1`). OFI transport, which is the recommended
+transport for inference, cannot use this path.
 
 ```
 Scaleout Data Path Decision (for GPU buffers, inter-node):
@@ -369,7 +210,124 @@ Scaleout Data Path Decision (for GPU buffers, inter-node):
 
 ---
 
-## NIC-to-GPU DMA via HMEM (CCL_ATL_HMEM) — Experimental
+## Copy Engines and Compute Overlap
+
+CRI has dedicated **copy engines** separate from the compute EUs:
+
+| Engine | What It Does | When Used |
+|---|---|---|
+| Main copy engine | General DMA: GPU-host, GPU-GPU (P2P over PCIe) | Default for all transfers |
+| Link copy engine | Dedicated to P2P over fabric links | Only with Xe Link (not on CRI) |
+| Compute EUs | GEMM, attention, etc. | Not used for communication |
+
+On CRI (no Xe Link), only the main copy engine is available for P2P. The link
+copy engine has no fabric to drive.
+
+Relevant variables:
+
+```bash
+# Which copy engine to use (CRI: only 'main' is useful)
+export CCL_ZE_COPY_ENGINE=main
+
+# Monolithic pipeline kernel: fuses reduce-scatter into a single kernel submission
+# Reduces command queue overhead for small messages
+export CCL_REDUCE_SCATTER_MONOLITHIC_PIPELINE_KERNEL=1
+```
+
+The copy engine operates concurrently with compute EUs. oneCCL can overlap the
+PCIe DMA (for the next layer's collective) with the current layer's GEMM, but
+only if collectives are issued asynchronously (see `async_op=True` pattern in
+[notebook 04](../notebooks/04_inference_tp_decode)).
+
+```
+Timeline (async_op=True, double-buffered):
+
+              Layer N          Layer N+1        Layer N+2
+              ─────────────    ─────────────    ─────────────
+Compute EUs:  ████ GEMM N ███  ████ GEMM N+1█  ████ GEMM N+2█
+Copy Engine:     ░░░ allreduce N-1 ░░░░
+                               ░░░ allreduce N ░░░░
+                                                ░░░ allreduce N+1 ░░░░
+              ├──────────────┤├──────────────┤├──────────────┤
+                             ▲               ▲
+                 compute and DMA overlap     no stalls, GPU always busy
+
+
+Timeline (sync, no overlap, DEFAULT without async_op):
+
+              Layer N       wait   Layer N+1     wait   Layer N+2
+              ───────────── ────── ───────────── ────── ─────────
+Compute EUs:  ████ GEMM N █        ████ GEMM N+1        ████ GEMM █
+Copy Engine:               ░░ AR N ░░           ░░AR N+1░░
+              ├─────────────┤├─────┤├────────────┤├─────┤
+                            ▲ STALL ▲            ▲ STALL▲
+                   GPU idle while allreduce completes
+```
+
+The async path hides communication latency behind compute. For decode (small GEMMs,
+~50 us), the overlap window is tight: communication must complete within one layer's
+compute time or it stalls the next layer.
+
+---
+
+## P2P Access
+
+oneCCL's topology manager probes P2P capabilities at init time:
+
+```
+check_p2p_access():
+  For each GPU pair, test if Level Zero IPC memory handles work.
+  On CRI: P2P works within a node via PCIe (no fabric).
+  Cross-node: no P2P, must use host staging.
+
+check_p2p_atomics():
+  Test if GPU atomic operations work across devices.
+  Xe GPUs: atomics across devices may not work reliably over PCIe.
+  oneCCL falls back to non-atomic paths when this check fails.
+```
+
+The result is a P2P connectivity matrix like:
+
+```
+P2P Connectivity Matrix (CRI 4-GPU node, 2 sockets):
+
+         GPU0   GPU1   GPU2   GPU3
+GPU0      -     PCIe   UPI    UPI     Socket 0: GPU0, GPU1
+GPU1    PCIe     -     UPI    UPI     Socket 1: GPU2, GPU3
+GPU2    UPI    UPI      -     PCIe
+GPU3    UPI    UPI    PCIe     -
+
+Legend:
+  PCIe = same-socket P2P via PCIe root complex (~25-32 GB/s)
+  UPI  = cross-socket P2P via UPI bridge (~10-15 GB/s under load)
+
+If IOMMU or ACS blocks P2P:
+
+         GPU0   GPU1   GPU2   GPU3
+GPU0      -     HOST   HOST   HOST    All pairs fall back to
+GPU1    HOST     -     HOST   HOST    host-staged copy (~5-10 GB/s)
+GPU2    HOST   HOST     -     HOST
+GPU3    HOST   HOST   HOST     -
+```
+
+If P2P access fails (e.g., due to IOMMU misconfiguration or missing
+`/dev/dri/renderD*` permissions), oneCCL falls back entirely to host-staged
+communication even for intra-node transfers, which costs 3-5x bandwidth.
+
+**Verify P2P is working:**
+```bash
+# Check that Level Zero sees all GPUs and can open IPC handles
+CCL_LOG_LEVEL=info mpirun -n 4 python -c "
+import torch.distributed as dist
+import oneccl_bindings_for_pytorch
+dist.init_process_group(backend='ccl')
+dist.destroy_process_group()
+" 2>&1 | grep -i "p2p\|ipc\|access"
+```
+
+---
+
+## NIC-to-GPU DMA via HMEM (CCL_ATL_HMEM), Experimental
 
 The **only mechanism** for avoiding host staging with OFI transport is
 `CCL_ATL_HMEM=1`. When set, oneCCL registers GPU memory directly with the
@@ -388,7 +346,7 @@ With HMEM enabled:
   (host CPU still orchestrates, but data path skips host memory)
 ```
 
-### How It Works Internally
+### Internal Mechanism
 
 The mechanism in oneCCL (from `src/atl/ofi/atl_ofi.cpp`):
 
@@ -399,7 +357,7 @@ The mechanism in oneCCL (from `src/atl/ofi/atl_ofi.cpp`):
 3. For GPU buffers, it registers with `fi_mr_regattr()` using `iface=FI_HMEM_ZE`
    and the Level Zero device index
 4. The registered MR descriptor is passed to `fi_tsendmsg()`/`fi_trecvmsg()`
-5. The libfabric verbs provider internally uses Linux dmabuf (kernel ≥ 5.12) to
+5. The libfabric verbs provider internally uses Linux dmabuf (kernel 5.12+) to
    allow the NIC to DMA from/to the GPU BAR
 
 ```
@@ -434,31 +392,31 @@ HMEM Registration and Transfer Flow:
   └───────────────────────────────────────────────────────────────┘
 ```
 
-oneCCL never passes dmabuf file descriptors directly — the dmabuf mechanism is
+oneCCL never passes dmabuf file descriptors directly. The dmabuf mechanism is
 abstracted behind libfabric's `FI_HMEM` API.
 
 ### No Hardware-Specific Gating
 
 HMEM has **no device-family restrictions** in oneCCL. It is purely a
-transport-layer feature — it works on any Intel GPU (PVC, ARC, CRI/Xe3)
+transport-layer feature that works on any Intel GPU (PVC, ARC, CRI/Xe3)
 if the following conditions are met:
 
 **Requirements:**
 - `CCL_ATL_HMEM=1` (runtime, default off)
-- `CCL_USE_HMEM=1` (runtime, default on — higher-level gate)
+- `CCL_USE_HMEM=1` (runtime, default on, higher-level gate)
 - Compiled with `ENABLE_OFI_HMEM=1` (default for dpcpp backend builds)
 - `FI_PROVIDER` set to `verbs`, `cxi`, or `psm3`
 - Provider must successfully negotiate `FI_HMEM` capability
-- Linux kernel ≥ 5.12 with dmabuf support
+- Linux kernel 5.12 or later with dmabuf support
 - Intel GPU driver with dmabuf export support
 - RDMA-capable NIC with verbs provider supporting `FI_HMEM_ZE`
 
-CRI (device ID `0x6740`, family8) is **not blocked** from any of these paths.
+CRI (device ID `0x6740`, family8) is not blocked from any of these paths.
 
 ### All GPU Direct Mechanisms in oneCCL
 
 oneCCL provides five mechanisms for avoiding host staging. **None are enabled by
-default.** All require explicit opt-in and have specific transport/stack requirements:
+default.** All require explicit opt-in and have specific transport or stack requirements:
 
 | Mechanism | Env Var | Transport | Default | CRI Compatible |
 |---|---|---|---|---|
@@ -471,12 +429,12 @@ default.** All require explicit opt-in and have specific transport/stack require
 **OFI HMEM** is the primary mechanism for CRI with OFI transport (the recommended
 transport for inference). The SYCL-based mechanisms (Direct GPU RDMA, Pipeline GPU RDMA)
 are alternatives that work through MPI transport only and are gated by
-`should_disable_rdma()` — CRI falls to the `default` case which does **not** disable RDMA.
+`should_disable_rdma()`. CRI falls to the `default` case which does **not** disable RDMA.
 
 Note: `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` is explicitly disabled when `CCL_ATL_TRANSPORT=ofi`
 (the recommended transport). It only works via MPI transport with `I_MPI_OFFLOAD` set.
 
-### GPU-to-GPU DMA Across Nodes (Scale-Out with HMEM)
+### GPU-to-GPU DMA Across Nodes (Scaleout with HMEM)
 
 When HMEM is enabled on **both** nodes, the full scale-out data path achieves
 GPU-to-GPU DMA without any host memory staging:
@@ -500,22 +458,22 @@ With HMEM enabled on both sides:
 
 Both the send path and receive path in `atl_ofi.cpp` use the HMEM MR cache for GPU
 buffers. Specifically:
-- **Send** (line ~481): `fi_tsendmsg()` with MR obtained from `cache.get()` — the
+- **Send** (line ~481): `fi_tsendmsg()` with MR obtained from `cache.get()`, the
   sending NIC DMA-reads directly from GPU A's memory
-- **Recv** (line ~522): `fi_trecvmsg()` with MR obtained from `cache.get()` — the
+- **Recv** (line ~522): `fi_trecvmsg()` with MR obtained from `cache.get()`, the
   receiving NIC DMA-writes directly into GPU B's memory
 
-This is functionally equivalent to NVIDIA GPUDirect RDMA, but uses Linux dmabuf
+This is functionally equivalent to NVIDIA GPUDirect RDMA but uses Linux dmabuf
 instead of nvidia-peermem as the kernel interface.
 
 **Requirements for scale-out GPU-to-GPU DMA:**
 
 | Requirement                      | Why                                              |
 |----------------------------------|--------------------------------------------------|
-| `CCL_ATL_HMEM=1` on both nodes  | Enables HMEM MR registration on send AND recv    |
+| `CCL_ATL_HMEM=1` on both nodes  | Enables HMEM MR registration on send and recv    |
 | libfabric `FI_HMEM` on both     | Both provider instances must negotiate FI_HMEM   |
 | GPU memory pre-registered       | `fi_mr_regattr` with FI_HMEM_ZE must succeed     |
-| Linux dmabuf (kernel >= 5.12)   | Backs FI_HMEM_ZE on both sender and receiver     |
+| Linux dmabuf (kernel 5.12+)     | Backs FI_HMEM_ZE on both sender and receiver     |
 | PCIe BAR large enough           | NIC needs BAR access to full GPU memory range    |
 | NIC supports FI_HMEM_ZE         | Both NICs must handle device memory descriptors  |
 
@@ -527,14 +485,14 @@ instead of nvidia-peermem as the kernel interface.
 | Provider API         | `FI_HMEM_CUDA`              | `FI_HMEM_ZE`                 |
 | NIC reads GPU mem    | Yes (via P2P BAR)           | Yes (via P2P BAR + dmabuf)   |
 | NIC writes GPU mem   | Yes (via P2P BAR)           | Yes (via P2P BAR + dmabuf)   |
-| GPU initiates I/O    | Yes (GDRCopy, NVSHMEM)      | **No** — host CPU posts ops  |
+| GPU initiates I/O    | Yes (GDRCopy, NVSHMEM)      | **No**, host CPU posts ops   |
 | Maturity             | Production (10+ years)      | Experimental                 |
 
 The last row is the remaining gap: on Intel Xe, the GPU kernel cannot autonomously
 post RDMA operations. The host CPU must call `fi_tsendmsg`/`fi_trecvmsg`. But the
-**data path** is GPU → NIC → network → NIC → GPU with zero host memory copies.
+**data path** is GPU to NIC to network to NIC to GPU with zero host memory copies.
 
-**Applies to both PVC and CRI.** Neither is in `should_disable_rdma()` — only certain
+**Applies to both PVC and CRI.** Neither is in `should_disable_rdma()`. Only certain
 ARC B-series desktop cards (0xE20B, 0xE20C, 0xE20D, 0xE212, 0xE220, 0xE221, 0xE223)
 are blocked. PVC (family2, device mask 0xBD0) and CRI (family8, device 0x6740) both
 fall to the `default` case which does **not** disable RDMA.
@@ -542,18 +500,18 @@ fall to the `default` case which does **not** disable RDMA.
 ### Production Readiness
 
 HMEM is **experimental** and not enabled by default because:
-- Not all NIC/driver combinations support `FI_HMEM_ZE` reliably
+- Not all NIC and driver combinations support `FI_HMEM_ZE` reliably
 - Memory registration overhead per collective (cached, but first-call penalty)
 - Requires specific libfabric build (`--enable-verbs --with-ze`)
-- Failure mode is silent hang (NIC cannot access GPU memory → indefinite wait)
+- Failure mode is silent hang (NIC cannot access GPU memory, waits indefinitely)
 
-When it works, it eliminates one PCIe round-trip per inter-node message (~2-5 µs
-saved per collective). For CRI's 160 allreduces per token, this could save 320-800 µs
-of TPOT — significant if validated on the target stack.
+When it works, it eliminates one PCIe round-trip per inter-node message (2-5 us
+saved per collective). For CRI's 160 allreduces per token, this could save 320-800 us
+of TPOT if validated on the target stack.
 
 ---
 
-## TMP_BUF: Async Collectives via Staging
+## TMP_BUF: Async Collectives with Staging
 
 For workloads that need non-blocking collective semantics (fire-and-forget with
 later synchronization), oneCCL provides `TMP_BUF` mode:
@@ -591,8 +549,8 @@ With TMP_BUF:
             start                             done
 ```
 
-**Tradeoff:** Adds two extra copies (in + out) but makes the collective fully
-asynchronous from the user's perspective. Useful when:
+**Tradeoff:** adds two extra copies (in and out) but makes the collective fully
+asynchronous from the caller's perspective. Useful when:
 - You need to overlap collective with compute on the **same** buffer
 - Latency tolerance is high but throughput matters (prefill, not decode)
 - You cannot restructure code to use double-buffering
@@ -602,7 +560,136 @@ overlap helps. Double-buffering with `async_op=True` is preferred.
 
 ---
 
-## Future Hardware: UALink and GPU RDMA
+## Published Benchmarks
+
+### Aurora Allreduce Latency (PVC, Xe Link, Slingshot-11)
+
+From Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv 2512.04291):
+
+| Message Size | 1 Node (6 GPUs) | 2048 Nodes (~12K GPUs) |
+|---|---|---|
+| 8 B | ~15 us | ~250 us |
+| 512 B | ~20 us | ~250 us |
+| 2 KB | ~25 us | ~260 us |
+| 64 KB | ~50 us | ~280 us |
+
+Latency growth is sub-linear (recursive-doubling and tree algorithms). Aurora uses 8x
+Slingshot-11 NICs per node (200 Gbps each), with 23-25 GB/s per NIC for GPU buffers.
+
+### oneCCL vs Optimized Libraries (Pre-Production Aurora, 2024)
+
+From Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library"
+(arXiv 2408.05962), tested on 4 Aurora nodes (48 GPU tiles):
+
+| Collective | oneCCL Throughput | HiCCL Throughput | Gap |
+|---|---|---|---|
+| Allreduce | 40-80 GB/s | 80-120 GB/s | 1.5-2x |
+| Broadcast | 20-40 GB/s | 80-120 GB/s | 2-4x |
+| All-to-All | 20-40 GB/s | 40-80 GB/s | 2x |
+
+HiCCL reported a **12.1x geometric mean improvement** over oneCCL across all
+collectives. Important caveats:
+- This was pre-production Aurora with early oneCCL (2024)
+- oneCCL's multi-NIC striping and hierarchical algorithms were not yet tuned for
+  Aurora's 12-GPU, 8-NIC topology
+- Production oneCCL has improved since then
+
+### Large-Scale Training Efficiency
+
+From Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora"
+(arXiv 2604.00785):
+- 220B parameter MoE model scaled from 384 to 12,288 PVC GPU tiles
+- **90% scaling efficiency** at 12,288 tiles
+- Communication overhead managed through expert-parallel sharding
+
+### How These Numbers Apply to CRI
+
+```
+Aurora Node (PVC):                    CRI Node (Xe3):
+
+  ┌──────────────────────────────┐    ┌─────────────────────────────────┐
+  │  Tile0 ══Xe Link══ Tile1    │    │  GPU0 ──PCIe── CPU ──PCIe── GPU1│
+  │    ║                  ║      │    │                 │                │
+  │  Tile2 ══Xe Link══ Tile3    │    │  GPU2 ──PCIe── CPU ──PCIe── GPU3│
+  │    ║                  ║      │    │               (UPI)              │
+  │  Tile4 ══Xe Link══ Tile5    │    └────────────────┬────────────────┘
+  │    ║                  ║      │                    │
+  │  [8x Slingshot-11 NICs]      │                1-2 NICs
+  └──────────────────────────────┘                    │
+                                                   Network
+
+  • 6 GPU tiles, Xe Link mesh         • 4 GPUs, PCIe only
+  • 8 NICs x 200 Gbps = 1.6 Tbps     • 1-2 NICs x 200 Gbps
+  • Scale-up: 100+ GB/s (Xe Link)     • Scale-up: 25-32 GB/s (PCIe)
+  • Scaleout: host-staged but         • Scaleout: host-staged,
+    8 NICs stripe bandwidth             fewer NICs, lower aggregate BW
+```
+
+CRI nodes are more constrained than Aurora:
+- No Xe Link (Aurora has 28 GB/s per Xe Link between GPU stacks)
+- Fewer NICs per node (Aurora has 8x Slingshot-11)
+- PCIe-only intra-node path
+
+Expect **higher per-collective latency** and **lower bandwidth** than the Aurora numbers
+above. The Aurora benchmarks are an upper bound on Intel GPU collective communication
+performance with fabric. CRI without fabric will sit closer to the small-message
+latency floor (15-25 us per collective) and will not scale bandwidth as well with
+message size.
+
+---
+
+## Practical Implications for CRI Deployment
+
+```
+Latency Breakdown: One Allreduce (TP=4, 2 nodes, 16 KB message):
+
+  ┌───────┬─────────┬─────────┬─────────┬─────────┬─────────┬───────┐
+  │       │         │         │         │         │         │       │
+  │ D2H   │Scale-up │  D2H    │  NIC    │ Network │  NIC    │  H2D  │
+  │ copy  │(PCIe    │  copy   │  post   │ transit │  recv   │  copy │
+  │       │ P2P RS) │(staging)│  send   │         │         │       │
+  │       │         │         │         │         │         │       │
+  ├───────┼─────────┼─────────┼─────────┼─────────┼─────────┼───────┤
+  │  2 us │   5 us  │   2 us  │   1 us  │   5 us  │   1 us  │  2 us │
+  └───────┴─────────┴─────────┴─────────┴─────────┴─────────┴───────┘
+  |◀─────────────────── Total: 25-40 us ────────────────────────────▶|
+
+                    |◀── host staging tax ──────────────────────────▶|
+                       11 us eliminated with HMEM or GPU Direct RDMA
+
+  x 160 allreduces per token (80 layers x 2 row-parallel) = 1.8-3.5 ms TPOT budget
+```
+
+Given CRI's constraints (no fabric, no GPU-initiated network I/O):
+
+1. **Never set `CCL_ALLREDUCE=ring` (or any non-topo value) for GPU inference.**
+   This forces GPU→host→CPU-algorithm→host→GPU for every collective. Use
+   `CCL_ALLREDUCE_SCALEOUT=ring` to control inter-node only.
+
+2. **Verify P2P access works.** Without it, even intra-node communication falls
+   back to host staging. Check `/dev/dri/` permissions and IOMMU settings.
+
+3. **Pin ranks to match GPU NUMA affinity.** The `topo` algorithm's scale-up phase
+   uses P2P DMA over PCIe. Misaligned pinning routes DMA through the wrong PCIe
+   root complex, crossing UPI unnecessarily.
+
+4. **Accept the host staging tax for scaleout.** In production (OFI transport,
+   default config), every inter-node collective pays GPU-host-NIC-host-GPU.
+   Budget 2-5 us per collective for the extra PCIe round-trips. `CCL_ATL_HMEM=1`
+   can eliminate this in theory but is experimental and not production-ready.
+
+5. **Use `async_op=True` to overlap.** While one collective is in the host staging
+   phase, the GPU can run compute for the next layer. This is the primary
+   mechanism to hide communication latency.
+
+6. **Don't enable `CCL_ATL_HMEM=1` in production** unless explicitly validated on
+   your driver/kernel/NIC stack. It's experimental and can cause silent hangs.
+
+See [Perf Tuning](perf_tuning) for the full variable reference and launch templates.
+
+---
+
+## Future Hardware: UALink, GPU RDMA
 
 | Constraint | CRI (Xe3) | Future (UALink-equipped) |
 |---|---|---|
@@ -636,155 +723,26 @@ CRI (current):                          Future (UALink):
 ```
 
 When GPU-initiated network I/O and UALink arrive:
-- Intra-node scale-up uses fabric instead of PCIe — bandwidth jumps dramatically
-- Scaleout collectives eliminate the host→NIC→host copy
+- Intra-node scale-up uses fabric instead of PCIe (100+ GB/s vs 32 GB/s)
+- Scaleout collectives eliminate the host-NIC-host copy
 - `topo` algorithm can pipeline GPU-initiated sends with compute
-- Latency drops by 1-2 PCIe round-trips per collective (~2-5 µs each)
+- Latency drops by 1-2 PCIe round-trips per collective (2-5 us each)
 - `offload` mode for send/recv becomes viable (currently requires HW RDMA)
-
----
-
-## Practical Implications for CRI Deployment
-
-```
-Latency Breakdown: One Allreduce (TP=4, 2 nodes, 16 KB message):
-
-  ┌───────┬─────────┬─────────┬─────────┬─────────┬─────────┬───────┐
-  │       │         │         │         │         │         │       │
-  │ D2H   │Scale-up │  D2H    │  NIC    │ Network │  NIC    │  H2D  │
-  │ copy  │(PCIe    │  copy   │  post   │ transit │  recv   │  copy │
-  │       │ P2P RS) │(staging)│  send   │         │         │       │
-  │       │         │         │         │         │         │       │
-  ├───────┼─────────┼─────────┼─────────┼─────────┼─────────┼───────┤
-  │ ~2 us │  ~5 us  │  ~2 us  │  ~1 us  │  ~5 us  │  ~1 us  │ ~2 us │
-  └───────┴─────────┴─────────┴─────────┴─────────┴─────────┴───────┘
-  |◀─────────────────── Total: ~25-40 us ───────────────────────────▶|
-
-                    |◀── host staging tax ──────────────────────────▶|
-                       ~11 us eliminated with HMEM/GPU Direct RDMA
-
-  × 160 allreduces per token (80 layers × 2 row-parallel) = 1.8-3.5 ms TPOT budget
-```
-
-Given CRI's constraints (no fabric, no GPU-initiated network I/O):
-
-1. **Never set `CCL_ALLREDUCE=ring` (or any non-topo value) for GPU inference.**
-   This forces GPU→host→CPU-algorithm→host→GPU for every collective. Use
-   `CCL_ALLREDUCE_SCALEOUT=ring` to control inter-node only.
-
-2. **Verify P2P access works.** Without it, even intra-node communication falls
-   back to host staging. Check `/dev/dri/` permissions and IOMMU settings.
-
-3. **Pin ranks to match GPU NUMA affinity.** The `topo` algorithm's scale-up phase
-   uses P2P DMA over PCIe — misaligned pinning routes DMA through the wrong PCIe
-   root complex, crossing UPI unnecessarily.
-
-4. **Accept the host staging tax for scaleout.** In production (OFI transport,
-   default config), every inter-node collective pays GPU→host→NIC→host→GPU.
-   Budget ~2-5 µs per collective for the extra PCIe round-trips. `CCL_ATL_HMEM=1`
-   can theoretically eliminate this, but is experimental and not production-ready.
-
-5. **Use `async_op=True` to overlap.** While one collective is in the host staging
-   phase, the GPU can run compute for the next layer. This is the primary
-   mechanism to hide communication latency.
-
-6. **Don't enable `CCL_ATL_HMEM=1` in production** unless explicitly validated on
-   your driver/kernel/NIC stack. It's experimental and can cause silent hangs.
-
-See [Perf Tuning](perf_tuning) for the full variable reference and launch templates.
-
----
-
-## Published Benchmarks: Collective Performance at Scale
-
-### Aurora Allreduce Latency (PVC + Xe Link + Slingshot-11)
-
-From Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291):
-
-| Message Size | 1 Node (6 GPUs) | 2048 Nodes (~12K GPUs) |
-|---|---|---|
-| 8 B | ~15 µs | ~250 µs |
-| 512 B | ~20 µs | ~250 µs |
-| 2 KB | ~25 µs | ~260 µs |
-| 64 KB | ~50 µs | ~280 µs |
-
-Latency growth is sub-linear (recursive-doubling/tree algorithms). Aurora uses 8×
-Slingshot-11 NICs per node (200 Gbps each), with ~23-25 GB/s per NIC for GPU buffers.
-
-### oneCCL vs Optimized Libraries (Pre-Production Aurora, 2024)
-
-From Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library"
-(arXiv:2408.05962), tested on 4 Aurora nodes (48 GPU tiles):
-
-| Collective | oneCCL Throughput | HiCCL Throughput | Gap |
-|---|---|---|---|
-| Allreduce | ~40-80 GB/s | ~80-120 GB/s | 1.5-2× |
-| Broadcast | ~20-40 GB/s | ~80-120 GB/s | 2-4× |
-| All-to-All | ~20-40 GB/s | ~40-80 GB/s | 2× |
-
-HiCCL reported a **12.1× geometric mean improvement** over oneCCL across all
-collectives. Important caveats:
-- This was pre-production Aurora with early oneCCL (2024)
-- oneCCL's multi-NIC striping and hierarchical algorithms were not yet tuned for
-  Aurora's 12-GPU, 8-NIC topology
-- Production oneCCL has improved significantly since
-
-### Large-Scale Training Efficiency
-
-From Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora"
-(arXiv:2604.00785):
-- 220B parameter MoE model scaled from 384 to 12,288 PVC GPU tiles
-- **~90% scaling efficiency** at 12,288 tiles
-- Communication overhead managed via expert-parallel sharding
-
-### What This Means for CRI
-
-```
-Aurora Node (PVC):                    CRI Node (Xe3):
-
-  ┌──────────────────────────────┐    ┌─────────────────────────────────┐
-  │  Tile0 ══Xe Link══ Tile1    │    │  GPU0 ──PCIe── CPU ──PCIe── GPU1│
-  │    ║                  ║      │    │                 │                │
-  │  Tile2 ══Xe Link══ Tile3    │    │  GPU2 ──PCIe── CPU ──PCIe── GPU3│
-  │    ║                  ║      │    │               (UPI)              │
-  │  Tile4 ══Xe Link══ Tile5    │    └────────────────┬────────────────┘
-  │    ║                  ║      │                    │
-  │  [8× Slingshot-11 NICs]     │                1-2 NICs
-  └──────────────────────────────┘                    │
-                                                   Network
-
-  • 6 GPU tiles, Xe Link mesh         • 4 GPUs, PCIe only
-  • 8 NICs × 200 Gbps = 1.6 Tbps     • 1-2 NICs × 200 Gbps
-  • Scale-up: ~100+ GB/s (Xe Link)    • Scale-up: ~25-32 GB/s (PCIe)
-  • Scaleout: host-staged but         • Scaleout: host-staged,
-    8 NICs stripe bandwidth             fewer NICs, lower aggregate BW
-```
-
-CRI nodes are more constrained than Aurora:
-- No Xe Link (Aurora has 28 GB/s per Xe Link between GPU stacks)
-- Fewer NICs per node (Aurora has 8× Slingshot-11)
-- PCIe-only intra-node path
-
-Expect **higher per-collective latency** and **lower bandwidth** than the Aurora numbers
-above. The Aurora benchmarks represent an upper bound for what Intel GPU collective
-communication achieves with fabric assistance. CRI without fabric will be closer to
-the small-message latency floor (~15-25 µs per collective) but will not scale bandwidth
-as aggressively with message size.
 
 ---
 
 ## References
 
-### Hardware & Source
-- [Intel Data Center GPU Max Series (PVC) Product Specs](https://www.intel.com/content/www/us/en/products/sku/232873/intel-data-center-gpu-max-1550/specifications.html) — Xe Link frequency, PCIe Gen5, tile architecture
-- [oneCCL Source: `topo_manager.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/topology/topo_manager.cpp) — `check_p2p_access()`, `check_p2p_atomics()`, fabric connectivity probing
-- [oneCCL Source: `ze_primitives.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/sched/entry/ze/ze_primitives.cpp) — `device_family` enum, `should_disable_rdma()`, copy engine selection
-- [oneCCL Documentation: Environment Variables](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/env-variables.rst) — `CCL_ATL_HMEM`, `CCL_ZE_COPY_ENGINE`, `TMP_BUF`, `offload` mode
-- [oneCCL Documentation: dmabuf Support](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/advanced-configuration/dmabuf.rst) — GPU memory registration via Linux dmabuf/OFI verbs
-- [UALink Consortium](https://ualink.org/) — open standard for accelerator interconnects (Intel founding member)
+### Hardware and Source
+- [Intel Data Center GPU Max Series (PVC) Product Specs](https://www.intel.com/content/www/us/en/products/sku/232873/intel-data-center-gpu-max-1550/specifications.html) : Xe Link frequency, PCIe Gen5, tile architecture
+- [oneCCL Source: `topo_manager.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/topology/topo_manager.cpp) : `check_p2p_access()`, `check_p2p_atomics()`, fabric connectivity probing
+- [oneCCL Source: `ze_primitives.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/sched/entry/ze/ze_primitives.cpp) : `device_family` enum, `should_disable_rdma()`, copy engine selection
+- [oneCCL Documentation: Environment Variables](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/env-variables.rst) : `CCL_ATL_HMEM`, `CCL_ZE_COPY_ENGINE`, `TMP_BUF`, `offload` mode
+- [oneCCL Documentation: dmabuf Support](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/advanced-configuration/dmabuf.rst) : GPU memory registration with Linux dmabuf and OFI verbs
+- [UALink Consortium](https://ualink.org/) : open standard for accelerator interconnects (Intel founding member)
 
-### Benchmarks & Papers
-- Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291, Dec 2025) — MPI collective latency/bandwidth at 2048+ nodes on PVC
-- Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library" (arXiv:2408.05962, Aug 2024) — oneCCL vs optimized collectives on pre-production Aurora
-- Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora" (arXiv:2604.00785, Apr 2026) — 90% scaling efficiency at 12,288 PVC tiles
-- Ma et al., "CoCoDiff: Optimizing Collective Communications for Distributed Diffusion Transformer Inference" (arXiv:2604.14561, Apr 2026) — 3.6× avg speedup for all-to-all on Aurora via topology-aware decomposition
+### Benchmarks and Papers
+- Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291, Dec 2025) : MPI collective latency and bandwidth at 2048+ nodes on PVC
+- Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library" (arXiv:2408.05962, Aug 2024) : oneCCL vs optimized collectives on pre-production Aurora
+- Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora" (arXiv:2604.00785, Apr 2026) : 90% scaling efficiency at 12,288 PVC tiles
+- Ma et al., "CoCoDiff: Optimizing Collective Communications for Distributed Diffusion Transformer Inference" (arXiv:2604.14561, Apr 2026) : 3.6x avg speedup for all-to-all on Aurora with topology-aware decomposition
