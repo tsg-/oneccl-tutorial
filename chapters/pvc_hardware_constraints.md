@@ -11,23 +11,42 @@ context from PVC (Ponte Vecchio, Xe-HPC) which introduced similar challenges.
 | Constraint | PVC (Xe-HPC, 2022) | CRI (Xe3, 2026) |
 |---|---|---|
 | Intra-node GPU fabric | Xe Link (high-BW coherent) | **None — PCIe only** |
-| GPU Direct DMA to NIC | No | No |
+| GPU-initiated network I/O | No | No |
+| NIC-to-GPU DMA (dmabuf) | Experimental | Experimental |
+| `offload` mode (Xe Link RDMA) | Yes (intra-node only) | No (no fabric) |
 
 **CRI is more constrained than PVC.** PVC had Xe Link for fast intra-node GPU-to-GPU
-transfers (used on systems like Aurora with 6 GPUs per node). CRI has no GPU fabric
-at all — every GPU-to-GPU transfer, even within the same node, traverses PCIe and
-potentially UPI.
+transfers (used on systems like Aurora with 6 GPUs per node) and could use `offload`
+mode for send/recv over that fabric. CRI has no GPU fabric at all — every GPU-to-GPU
+transfer, even within the same node, traverses PCIe and potentially UPI.
 
-Both generations lack **GPU Direct DMA** — the GPU cannot initiate network transfers.
-All inter-node communication requires host CPU staging.
+Neither generation supports **GPU-initiated network I/O** — the GPU cannot autonomously
+post sends or receives to the NIC. All inter-node communication requires host CPU
+orchestration. The experimental dmabuf path (`CCL_ATL_HMEM=1`) allows the NIC to directly
+read GPU memory (avoiding one host copy), but the host CPU still initiates and manages
+the transfer.
 
 ---
 
-## GPU Direct DMA: Absent in Both Generations
+## GPU Direct DMA: Absent on CRI
 
-**GPU Direct DMA** (also called GPU-initiated communication or GPU RDMA) allows a GPU
-kernel to directly post network operations (RDMA sends/receives) without involving the
-host CPU. NVIDIA's GPUDirect RDMA + CUDA kernels can do this. Intel Xe GPUs cannot.
+The term "GPU Direct" covers a spectrum of capabilities:
+
+| Capability | Description | NVIDIA | PVC (Xe-HPC) | CRI (Xe3) |
+|---|---|---|---|---|
+| **GPU-initiated network I/O** | GPU kernel autonomously posts RDMA sends/receives to NIC | Yes (GPUDirect Async) | No | No |
+| **NIC-to-GPU DMA (host-orchestrated)** | NIC reads/writes GPU memory via PCIe; host CPU sets up transfers | Yes (GPUDirect RDMA) | Experimental (dmabuf) | Experimental (dmabuf) |
+| **GPU-to-GPU P2P DMA** | One GPU's copy engine reads another GPU's memory | Yes (NVLink / PCIe) | Yes (Xe Link + PCIe) | PCIe only |
+| **GPU RDMA offload** | Library offloads send/recv to device-side agent | Yes | Xe Link only (`offload` mode) | No |
+
+The critical distinction: on NVIDIA hardware, a GPU kernel can **autonomously** initiate
+network operations — no host CPU involvement after setup. On Intel Xe (both PVC and CRI),
+the host CPU must orchestrate every network transfer. The GPU can perform local DMA
+(copy engines for P2P), but cannot issue commands to the NIC.
+
+PVC with Xe Link has partial "GPU RDMA" support via oneCCL's `offload` mode for send/recv,
+where the library uses Xe Link fabric for intra-node transfers without host staging.
+CRI lacks even this — no fabric means no `offload` path.
 
 On CRI, the GPU has no path to initiate network I/O:
 
@@ -194,34 +213,75 @@ dist.destroy_process_group()
 
 ---
 
-## GPU Memory Registration (dmabuf) — Experimental
+## NIC-to-GPU DMA via HMEM (CCL_ATL_HMEM) — Experimental
 
-Linux 5.12+ provides **dmabuf** (DMA buffer sharing) which allows a NIC to
-directly access GPU memory regions without host staging:
+When `CCL_ATL_HMEM=1` is set, oneCCL registers GPU memory directly with the
+libfabric transport layer using the `FI_HMEM` capability. This allows the NIC
+to perform RDMA reads/writes directly from/to GPU memory, eliminating the
+host staging copy on the send and receive paths.
 
 ```
-Without dmabuf (current default):
-  GPU buf → copy to host → NIC reads from host → network
+Without HMEM (current default):
+  Send: GPU buf → copy to host staging → NIC reads host → network
+  Recv: network → NIC writes host → copy to GPU buf
 
-With dmabuf (experimental):
-  GPU buf → NIC reads directly via dmabuf fd → network
-  (eliminates one host copy on the send path)
+With HMEM enabled:
+  Send: GPU buf → NIC reads GPU memory directly → network
+  Recv: network → NIC writes GPU memory directly
+  (host CPU still orchestrates, but data path skips host memory)
 ```
 
-To enable on supported configurations:
+### How It Works Internally
 
-```bash
-export CCL_ATL_HMEM=1       # Enable heterogeneous memory support
-export FI_MR_CACHE_MONITOR=userfaultfd  # Required for OFI memory registration
-```
+The mechanism in oneCCL (from `src/atl/ofi/atl_ofi.cpp`):
+
+1. At init, oneCCL opens a libfabric provider with `FI_HMEM` capability and
+   `FI_MR_HMEM` memory registration mode
+2. On each send/recv, oneCCL calls `zeMemGetAllocProperties()` to determine if
+   the buffer is GPU memory
+3. For GPU buffers, it registers with `fi_mr_regattr()` using `iface=FI_HMEM_ZE`
+   and the Level Zero device index
+4. The registered MR descriptor is passed to `fi_tsendmsg()`/`fi_trecvmsg()`
+5. The libfabric verbs provider internally uses Linux dmabuf (kernel ≥ 5.12) to
+   allow the NIC to DMA from/to the GPU BAR
+
+oneCCL never passes dmabuf file descriptors directly — the dmabuf mechanism is
+abstracted behind libfabric's `FI_HMEM` API.
+
+### No Hardware-Specific Gating
+
+HMEM has **no device-family restrictions** in oneCCL. It is purely a
+transport-layer feature — it works on any Intel GPU (PVC, ARC, or future Xe3)
+if the following conditions are met:
 
 **Requirements:**
-- Linux kernel ≥ 5.12 with CONFIG_DMABUF enabled
+- `CCL_ATL_HMEM=1` (runtime, default off)
+- `CCL_USE_HMEM=1` (runtime, default on — higher-level gate)
+- Compiled with `ENABLE_OFI_HMEM=1` (default for dpcpp backend builds)
+- `FI_PROVIDER` set to `verbs`, `cxi`, or `psm3`
+- Provider must successfully negotiate `FI_HMEM` capability
+- Linux kernel ≥ 5.12 with dmabuf support
 - Intel GPU driver with dmabuf export support
-- OFI provider that supports FI_HMEM (e.g., verbs with peer-memory or PSM3)
+- RDMA-capable NIC with verbs provider supporting `FI_HMEM_ZE`
 
-This is **not production-ready** on current CRI deployments but represents the
-path toward eliminating host staging on the send side.
+### Separate Mechanism: CCL_SYCL_ENABLE_DIRECT_GPU_RDMA
+
+There is a separate, newer path (`CCL_SYCL_ENABLE_DIRECT_GPU_RDMA`, default 0) in the
+SYCL collective layer that passes GPU buffers directly to MPI operations. Unlike HMEM,
+this path **is** hardware-gated: `should_disable_rdma()` in `ze_primitives.cpp` disables
+it for specific ARC B-series device IDs. This gate does not affect the ATL/HMEM path.
+
+### Production Readiness
+
+HMEM is **experimental** and not enabled by default because:
+- Not all NIC/driver combinations support `FI_HMEM_ZE` reliably
+- Memory registration overhead per collective (cached, but first-call penalty)
+- Requires specific libfabric build (`--enable-verbs --with-ze`)
+- Failure mode is silent hang (NIC cannot access GPU memory → indefinite wait)
+
+When it works, it eliminates one PCIe round-trip per inter-node message (~2-5 µs
+saved per collective). For CRI's 160 allreduces per token, this could save 320-800 µs
+of TPOT — significant if validated on the target stack.
 
 ---
 
@@ -255,14 +315,15 @@ overlap helps. Double-buffering with `async_op=True` is preferred.
 
 | Constraint | CRI (Xe3) | Future (UALink-equipped) |
 |---|---|---|
-| GPU Direct DMA (GPU-initiated NIC) | No | Expected (HW RDMA engine) |
+| GPU-initiated network I/O | No | Expected (HW RDMA engine) |
+| NIC-to-GPU DMA (zero-copy) | Experimental (dmabuf) | Native |
 | Intra-node fabric | None (PCIe only) | UALink (high-BW open mesh) |
 | P2P atomics | Unreliable over PCIe | Full support expected |
 | Copy engines for fabric | Main only (no link target) | Link engines + UALink |
 | NIC integration | Discrete (PCIe-attached) | Closer integration expected |
-| Host staging required? | Yes (scaleout) | No (with GPU RDMA) |
+| Host staging required? | Yes (scaleout) | No (with GPU-initiated RDMA) |
 
-When GPU Direct DMA and UALink arrive:
+When GPU-initiated network I/O and UALink arrive:
 - Intra-node scale-up uses fabric instead of PCIe — bandwidth jumps dramatically
 - Scaleout collectives eliminate the host→NIC→host copy
 - `topo` algorithm can pipeline GPU-initiated sends with compute
