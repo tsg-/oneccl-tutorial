@@ -10,7 +10,7 @@ Socket 0 (NUMA 0)          Socket 1 (NUMA 1)
 ┌──────────────────┐        ┌──────────────────┐
 │  GPU0  GPU1      │        │  GPU2  GPU3      │
 │   │     │        │        │   │     │        │
-│  PCIe Root Cx   │──UPI───│  PCIe Root Cx   │
+│  PCIe Root Cx    │──UPI───│  PCIe Root Cx    │
 │        │         │        │        │         │
 │      CPU0        │        │      CPU1        │
 └──────────────────┘        └──────────────────┘
@@ -42,6 +42,26 @@ Ring order:  GPU0 → GPU1 → GPU2 → GPU3 → GPU4 → GPU5 → GPU6 → GPU7
 
 This means 6 of 8 hops stay on-socket (fast PCIe), only 2 cross UPI.
 A naively ordered ring (0,4,1,5,2,6,3,7) would alternate sockets on every hop -- 8x the UPI traffic.
+
+The difference in hop cost:
+
+```
+Topology-aware ring (socket-local hops dominate):
+
+  Socket 0                    Socket 1
+  ┌────────────────────┐      ┌────────────────────┐
+  │ GPU0 ──→ GPU1      │      │ GPU2 ──→ GPU3      │
+  │  (PCIe: ~32 GB/s)  │      │  (PCIe: ~32 GB/s)  │
+  └─────────┬──────────┘      └──────────┬─────────┘
+            │                             │
+            └──────── UPI (~50 GB/s) ─────┘
+                    (only 2 hops cross)
+
+Naive interleaved ring (every hop crosses UPI):
+
+  GPU0 ──UPI──→ GPU4 ──UPI──→ GPU1 ──UPI──→ GPU5 ──UPI──→ ...
+          ×8 UPI crossings = saturates inter-socket link
+```
 
 **oneCCL constructs topology-aware rings automatically when NUMA affinity is set correctly.**
 The key is ensuring MPI rank-to-socket pinning matches GPU assignment:

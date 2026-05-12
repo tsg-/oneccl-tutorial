@@ -47,6 +47,9 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 | Alltoall | topo (scale-up + scatter scaleout) | Done | MoE expert routing |
 | Scatter/Gather | Ring | P0 | KV cache distribution |
 
+**Status:** Done = implemented and available on CRI today. P0 = highest priority,
+actively in development. P1 = planned, pending hardware support (e.g., GPU fabric).
+
 ## How to Run the Notebooks
 
 Each notebook is designed to be launched via `mpirun` from a JupyterHub terminal:

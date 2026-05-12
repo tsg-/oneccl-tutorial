@@ -212,6 +212,45 @@ Using the α-β model:
 Rank 0 handles 2(p-1) messages while every other rank handles 2. It is a serial bottleneck
 that does not scale.
 
+### 5.1b Ring Allreduce (Reduce-Scatter + Allgather)
+
+Ring allreduce decomposes the operation into two phases, each using the ring topology.
+Every rank sends and receives exactly once per step — no bottleneck rank.
+
+```
+p=4 Ring Allreduce on message [A, B, C, D] (one chunk per rank):
+
+Phase 1: Reduce-Scatter (3 steps)
+Each rank accumulates the sum for its "owned" chunk.
+
+  Step 1:          Step 2:          Step 3:
+  R0 ──→ R1       R0 ──→ R1       R0 ──→ R1
+  ↑       │       ↑       │       ↑       │
+  │       ▼       │       ▼       │       ▼
+  R3 ←── R2       R3 ←── R2       R3 ←── R2
+
+After 3 steps: R0 owns sum(A), R1 owns sum(B), R2 owns sum(C), R3 owns sum(D)
+
+Phase 2: Allgather (3 steps)
+Each rank broadcasts its reduced chunk around the ring.
+
+  Step 4:          Step 5:          Step 6:
+  R0 ──→ R1       R0 ──→ R1       R0 ──→ R1
+  ↑       │       ↑       │       ↑       │
+  │       ▼       │       ▼       │       ▼
+  R3 ←── R2       R3 ←── R2       R3 ←── R2
+
+After 6 steps: every rank has the full reduced result [sum(A), sum(B), sum(C), sum(D)]
+```
+
+Using the α-β model:
+- Reduce-scatter: (p-1)α + ((p-1)/p)nβ + ((p-1)/p)nγ
+- Allgather:      (p-1)α + ((p-1)/p)nβ
+- **Total: 2(p-1)α + 2((p-1)/p)nβ + ((p-1)/p)nγ**
+
+The bandwidth term `2((p-1)/p)nβ` is **optimal** — no allreduce algorithm can do better
+for p > 2. Every link carries exactly (p-1)/p of the data in each phase.
+
 ### 5.2 Allgather: Ring vs. Recursive Doubling
 
 This is the pair analyzed in depth by Thakur & Gropp (2003). Both algorithms are optimal

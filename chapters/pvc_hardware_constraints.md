@@ -32,17 +32,21 @@ host CPU. NVIDIA's GPUDirect RDMA + CUDA kernels can do this. Intel Xe GPUs cann
 On CRI, the GPU has no path to initiate network I/O:
 
 ```
-                  ┌─── CRI GPU (Xe3) ───┐
-                  │  Compute (EUs)       │
-                  │  Copy Engines        │──── Level Zero IPC (intra-node P2P via PCIe)
-                  │  L1/L2 Cache         │
-                  └──────────┬───────────┘
-                             │ PCIe
-                             ▼
-                  ┌─── Host CPU ───┐
-                  │  oneCCL worker  │──── NIC (OFI/verbs) ──── Network
-                  │  staging buffer │
-                  └────────────────┘
+  ┌──────────────────────┐
+  │    CRI GPU (Xe3)     │
+  ├──────────────────────┤
+  │  Compute (EUs)       │
+  │  Copy Engines        │──── Level Zero IPC (intra-node P2P via PCIe)
+  │  L1/L2 Cache         │
+  └───────────┬──────────┘
+              │ PCIe
+              ▼
+  ┌──────────────────────┐
+  │      Host CPU        │
+  ├──────────────────────┤
+  │  oneCCL worker       │──── NIC (OFI/verbs) ──── Network
+  │  staging buffer      │
+  └──────────────────────┘
 
   GPU cannot talk to the NIC directly.
   All inter-node traffic goes through host staging.
@@ -94,6 +98,30 @@ Scaleout phase (inter-node):
   GPU → host staging buffer (PCIe DMA)
   Host → NIC → network → remote host (OFI transport)
   Remote host → remote GPU (PCIe DMA)
+```
+
+For a 2-node allreduce with TP=4 per node, the full data flow:
+
+```
+  Node 0                                      Node 1
+  ┌──────────────────────────────┐            ┌──────────────────────────────┐
+  │ GPU0  GPU1  GPU2  GPU3       │            │ GPU4  GPU5  GPU6  GPU7       │
+  │   │     │     │     │        │            │   │     │     │     │        │
+  │   └─────┴─────┴─────┘        │            │   └─────┴─────┴─────┘        │
+  │     Scale-up: PCIe P2P       │            │     Scale-up: PCIe P2P       │
+  │     (reduce-scatter local)   │            │     (reduce-scatter local)   │
+  │           │                  │            │           │                  │
+  │           ▼                  │            │           ▼                  │
+  │     ┌──────────┐             │            │     ┌──────────┐             │
+  │     │ staging  │─── NIC ─────┼──── OFI ───┼── NIC ───│ staging  │        │
+  │     │  buffer  │             │  (scaleout) │          │  buffer  │       │
+  │     └──────────┘             │            │           └──────────┘       │
+  │           │                  │            │           │                  │
+  │           ▼                  │            │           ▼                  │
+  │     Allgather local          │            │     Allgather local          │
+  │   ┌─────┬─────┬─────┐       │            │   ┌─────┬─────┬─────┐         │
+  │ GPU0  GPU1  GPU2  GPU3       │            │ GPU4  GPU5  GPU6  GPU7       │
+  └──────────────────────────────┘            └──────────────────────────────┘
 ```
 
 This is why `CCL_ALLREDUCE=topo` (the default) must remain set for GPU buffers.
