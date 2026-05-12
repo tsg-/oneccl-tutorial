@@ -33,6 +33,37 @@ link carries redundant traffic.
 **Collective communication** solves these "all need all" problems efficiently by exploiting
 the structure of what everyone is computing.
 
+### Concrete Example: Llama-3 70B with TP=4
+
+In Llama-3 70B, a single transformer layer contains these weight matrices:
+
+```
+Attention:
+  Q projection: [8192, 8192]  → column-split: each GPU holds [8192, 2048]
+  K projection: [8192, 1024]  → column-split: each GPU holds [8192, 256]   (GQA: 8 KV heads)
+  V projection: [8192, 1024]  → column-split: each GPU holds [8192, 256]
+  O projection: [8192, 8192]  → row-split:    each GPU holds [2048, 8192]
+                                               ↑ ALLREDUCE after this layer
+
+FFN (SwiGLU):
+  Gate:          [8192, 28672] → column-split: each GPU holds [8192, 7168]
+  Up:            [8192, 28672] → column-split: each GPU holds [8192, 7168]
+  Down:          [28672, 8192] → row-split:    each GPU holds [7168, 8192]
+                                               ↑ ALLREDUCE after this layer
+```
+
+The **row-parallel** layers (O projection, FFN down) produce partial sums — each GPU
+computed `input @ weight_shard` where `weight_shard` is a row slice. The partial outputs
+must be summed (allreduced) to produce the correct full output. This is the origin of the
+"2 allreduces per transformer layer" rule.
+
+For batch=1, seq=1 (decode mode):
+- Allreduce message size = hidden_dim × sizeof(BF16) = 8192 × 2 = **16,384 bytes (16 KB)**
+- With 80 layers × 2 allreduces = **160 allreduces per generated token**
+- Total data moved per token ≈ 160 × 16 KB × 2 × (3/4) = **3.84 MB** (ring, p=4)
+
+This is why collective communication latency directly determines token generation speed.
+
 ---
 
 ## 2. Ranks, World Size, and Communicators

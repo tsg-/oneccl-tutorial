@@ -18,6 +18,66 @@ Socket 0 (NUMA 0)          Socket 1 (NUMA 1)
 
 Every GPU-to-GPU transfer crosses PCIe and potentially UPI. There is no direct peer path.
 
+### PCIe Gen5 Bandwidth Budget
+
+Each PCIe Gen5 x16 link provides:
+
+| Direction | Theoretical | Achievable (with protocol overhead) |
+|---|---|---|
+| Unidirectional | 63 GB/s | ~50-55 GB/s |
+| Bidirectional (full duplex) | 126 GB/s | ~90-100 GB/s |
+
+For a P2P DMA between two GPUs on the same socket:
+```
+GPU0 → PCIe Root Complex → GPU1
+Effective BW: ~25-32 GB/s (one direction, sharing root complex)
+```
+
+For a P2P DMA between GPUs on different sockets:
+```
+GPU0 → PCIe RC (Socket 0) → UPI → PCIe RC (Socket 1) → GPU2
+Effective BW: limited by UPI (~50-100 GB/s shared across all traffic)
+Added latency: ~200-400 ns per UPI hop
+```
+
+The UPI link is shared by all cross-socket traffic — CPU cache coherence, memory
+accesses, and PCIe forwarding all compete for the same bandwidth. Under load from
+multiple GPU pairs communicating simultaneously, effective per-pair bandwidth can
+drop to 10-15 GB/s.
+
+### Why P2P DMA Works (or Fails) on CRI
+
+Level Zero IPC handles enable P2P DMA over PCIe, but several hardware/software
+conditions must be met:
+
+| Requirement | What Happens if Not Met |
+|---|---|
+| IOMMU in passthrough or disabled | DMA remapping adds ~1-2 µs per transfer |
+| ACS (Access Control Services) disabled on PCIe bridges | P2P routed through CPU instead of direct switch |
+| BAR (Base Address Register) large enough | GPU memory not fully mappable by peers |
+| `/dev/dri/renderD*` permissions | Level Zero cannot open IPC handles |
+| Same PCIe root complex (ideal) | Cross-root transfers add latency |
+
+oneCCL's `topo_manager` probes these conditions at `init_process_group()` time and
+builds a P2P connectivity matrix. If any pair fails the check, that pair falls back
+to host-staged copy (GPU → host buffer → GPU), adding ~2-5 µs and halving bandwidth.
+
+Verify P2P connectivity:
+```bash
+# Check if Level Zero reports peer access
+ze_peak --peer-access
+
+# Check IOMMU mode
+dmesg | grep -i "iommu\|DMAR"
+# Should see: "DMAR: IOMMU disabled" or "intel_iommu=off"
+
+# Check ACS on PCIe bridges
+setpci -s <bridge_bdf> ECAP_ACS+6.w
+# Bit 2 (ACS P2P Request Redirect) should be 0 for direct P2P
+```
+
+---
+
 ## One-Shot Allreduce Under NUMA
 
 One-Shot Allreduce requires simultaneous fan-out from each GPU to all N-1 peers.
@@ -106,9 +166,40 @@ Unlike NVLink hardware where One-Shot wins below ~1MB, NUMA flips the crossover:
 | Message Size | NUMA-Optimal Algorithm | Reason |
 |---|---|---|
 | < 64 KB | Ring (small-message path) | Low latency, fits in L3/IOLLC |
-| 64 KB -- 4 MB | Ring (pipelined RS+AG) | Pipelined reduce-scatter + allgather fills PCIe bandwidth |
+| 64 KB – 4 MB | Ring (pipelined RS+AG) | Pipelined reduce-scatter + allgather fills PCIe bandwidth |
 | > 4 MB | Ring (large-message path) | Bandwidth-bound, ring optimal |
 | Any | NOT One-Shot | Fan-out saturates PCIe |
+
+### Ring Pipeline Efficiency on NUMA
+
+For the ring algorithm on p ranks with message size n bytes:
+
+```
+Total data moved per rank = 2 × ((p-1)/p) × n
+  (reduce-scatter: (p-1)/p × n sent + received)
+  (allgather:      (p-1)/p × n sent + received)
+
+Pipeline utilization (fraction of peak link BW achieved):
+  Ideal: ((p-1)/p)  → approaches 1.0 as p grows
+  p=4: 75%
+  p=8: 87.5%
+
+Time for ring allreduce (bandwidth-bound regime):
+  T = 2(p-1)α + 2((p-1)/p) × n/BW_link
+
+  For p=4, n=1MB, BW_link=25 GB/s (PCIe P2P achievable):
+  T_bw = 2 × (3/4) × 1MB / 25 GB/s = 60 µs (bandwidth component)
+  T_lat = 2 × 3 × α ≈ 6 × 5µs = 30 µs (latency component, α≈5µs for PCIe P2P)
+  T_total ≈ 90 µs
+
+  Same with UPI crossing (BW_link drops to ~15 GB/s effective):
+  T_bw = 2 × (3/4) × 1MB / 15 GB/s = 100 µs
+  T_total ≈ 130 µs  (44% regression from NUMA misalignment)
+```
+
+This quantifies why NUMA pinning is the single biggest lever: misalignment doesn't just
+add latency to 2 hops — it degrades the effective bandwidth of every hop that crosses
+UPI, compounding across all (p-1) ring steps.
 
 ## Practical Verification
 

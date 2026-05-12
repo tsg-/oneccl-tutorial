@@ -124,6 +124,49 @@ dist.all_to_all_single(output, input, output_split_sizes, input_split_sizes)
 **MoE inference always uses alltoallv.** Token routing is never perfectly balanced. If you
 use the fixed-size `alltoall` with imbalanced routing, you waste bandwidth on padding.
 
+### Worked Example: MoE Buffer Sizing
+
+Consider Mixtral 8×7B with 8 experts distributed across 4 GPUs (2 experts per GPU):
+
+```
+Model parameters:
+  Hidden dim: 4096
+  Expert FFN dim: 14336
+  Top-K routing: 2 (each token activates 2 of 8 experts)
+  Batch: 32 tokens in decode step
+
+Token routing (example — worst case skew):
+  Expert 0 (GPU 0): receives 12 tokens
+  Expert 1 (GPU 0): receives 4 tokens
+  Expert 2 (GPU 1): receives 8 tokens
+  Expert 3 (GPU 1): receives 6 tokens
+  Expert 4 (GPU 2): receives 10 tokens
+  Expert 5 (GPU 2): receives 8 tokens
+  Expert 6 (GPU 3): receives 10 tokens
+  Expert 7 (GPU 3): receives 6 tokens
+  Total activations: 32 × 2 = 64 (each token goes to 2 experts)
+
+Dispatch alltoallv buffer sizes:
+  Each token sends: hidden_dim × sizeof(BF16) = 4096 × 2 = 8 KB
+  GPU 0 sends to GPU 1: (tokens routed to experts 2,3 from GPU 0's batch) × 8 KB
+  GPU 0 sends to GPU 2: (tokens routed to experts 4,5 from GPU 0's batch) × 8 KB
+  ... (asymmetric per rank)
+
+  Peak send buffer per GPU: ~32 tokens × 8 KB = 256 KB
+  Peak recv buffer per GPU: ~16 tokens × 8 KB = 128 KB (2 experts, max load)
+
+Combine alltoallv (reverse direction):
+  Each expert output: hidden_dim × sizeof(BF16) = 8 KB per token
+  Same asymmetric pattern, transposed
+
+Total alltoallv data per MoE layer: ~512 KB – 1 MB (both directions)
+With 8 MoE layers in a 32-layer model: ~4-8 MB total MoE comm per forward pass
+```
+
+The key insight: MoE alltoallv messages are **medium-sized** (100 KB–1 MB per rank pair)
+and **asymmetric**. The `topo` algorithm handles this correctly — it uses scatter for the
+scaleout phase, which supports variable-length messages natively.
+
 > **Reference:** MPICH documentation, *MPI_Alltoallv*, covers the variable displacement
 > semantics. The pattern of (send_counts, send_displs, recv_counts, recv_displs) maps
 > directly to PyTorch's `input_split_sizes` / `output_split_sizes`.
