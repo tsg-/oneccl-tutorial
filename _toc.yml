@@ -8,6 +8,8 @@ parts:
         title: "From First Principles: Collective Communication"
       - file: chapters/01_overview
       - file: chapters/02_topology
+      - file: chapters/pvc_hardware_constraints
+        title: "GPU Hardware Constraints"
       - file: chapters/03_when_to_use
 
   - caption: "Hands-On Walkthroughs"
