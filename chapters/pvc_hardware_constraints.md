@@ -12,41 +12,56 @@ context from PVC (Ponte Vecchio, Xe-HPC) which introduced similar challenges.
 |---|---|---|
 | Intra-node GPU fabric | Xe Link (high-BW coherent) | **None — PCIe only** |
 | GPU-initiated network I/O | No | No |
-| NIC-to-GPU DMA (dmabuf) | Experimental | Experimental |
+| NIC-to-GPU DMA (HMEM/dmabuf) | Supported (`CCL_ATL_HMEM=1`) | Supported (`CCL_ATL_HMEM=1`) |
 | `offload` mode (Xe Link RDMA) | Yes (intra-node only) | No (no fabric) |
 
-**CRI is more constrained than PVC.** PVC had Xe Link for fast intra-node GPU-to-GPU
-transfers (used on systems like Aurora with 6 GPUs per node) and could use `offload`
-mode for send/recv over that fabric. CRI has no GPU fabric at all — every GPU-to-GPU
+**CRI is more constrained than PVC** in topology: PVC had Xe Link for fast intra-node
+GPU-to-GPU transfers (used on systems like Aurora with 6 GPUs per node) and could use
+`offload` mode for send/recv over that fabric. CRI has no GPU fabric — every GPU-to-GPU
 transfer, even within the same node, traverses PCIe and potentially UPI.
 
-Neither generation supports **GPU-initiated network I/O** — the GPU cannot autonomously
-post sends or receives to the NIC. All inter-node communication requires host CPU
-orchestration. The experimental dmabuf path (`CCL_ATL_HMEM=1`) allows the NIC to directly
-read GPU memory (avoiding one host copy), but the host CPU still initiates and manages
-the transfer.
+Both generations support **NIC-to-GPU DMA** via `CCL_ATL_HMEM=1` (the NIC reads/writes
+GPU memory directly via dmabuf, eliminating host staging on the data path). Neither
+generation supports **GPU-initiated network I/O** — the GPU cannot autonomously post
+sends or receives to the NIC. The host CPU always orchestrates the transfer.
+
+### CRI in oneCCL Source
+
+oneCCL recognizes CRI as device ID `0x6740` (device family `family8`). It is classified
+as an "arc card" and uses SYCL kernel-based algorithms with PCIe-oriented code paths.
+CRI is **not** in the `should_disable_rdma()` blocklist — all GPU RDMA mechanisms
+(HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available. The AOT compilation targets
+include `xe3` alongside `pvc` and `xe2`.
 
 ---
 
-## GPU Direct DMA: Absent on CRI
+## GPU-Initiated Network I/O: Absent on CRI
 
-The term "GPU Direct" covers a spectrum of capabilities:
+The term "GPU Direct" covers a spectrum of capabilities. The critical distinction is
+who **initiates** the network transfer:
 
 | Capability | Description | NVIDIA | PVC (Xe-HPC) | CRI (Xe3) |
 |---|---|---|---|---|
 | **GPU-initiated network I/O** | GPU kernel autonomously posts RDMA sends/receives to NIC | Yes (GPUDirect Async) | No | No |
-| **NIC-to-GPU DMA (host-orchestrated)** | NIC reads/writes GPU memory via PCIe; host CPU sets up transfers | Yes (GPUDirect RDMA) | Experimental (dmabuf) | Experimental (dmabuf) |
+| **NIC-to-GPU DMA (host-orchestrated)** | NIC reads/writes GPU memory via PCIe; host CPU sets up transfers | Yes (GPUDirect RDMA) | Yes (HMEM/dmabuf) | Yes (HMEM/dmabuf) |
 | **GPU-to-GPU P2P DMA** | One GPU's copy engine reads another GPU's memory | Yes (NVLink / PCIe) | Yes (Xe Link + PCIe) | PCIe only |
-| **GPU RDMA offload** | Library offloads send/recv to device-side agent | Yes | Xe Link only (`offload` mode) | No |
+| **GPU RDMA offload** | Library offloads send/recv to device-side agent | Yes | Xe Link only (`offload` mode) | No (no fabric) |
 
-The critical distinction: on NVIDIA hardware, a GPU kernel can **autonomously** initiate
-network operations — no host CPU involvement after setup. On Intel Xe (both PVC and CRI),
-the host CPU must orchestrate every network transfer. The GPU can perform local DMA
-(copy engines for P2P), but cannot issue commands to the NIC.
+On NVIDIA hardware, a GPU kernel can **autonomously** initiate network operations — no
+host CPU involvement after setup. On Intel Xe (both PVC and CRI), the host CPU must
+orchestrate every network transfer. The GPU can perform local DMA (copy engines for P2P),
+but cannot issue commands to the NIC.
 
-PVC with Xe Link has partial "GPU RDMA" support via oneCCL's `offload` mode for send/recv,
-where the library uses Xe Link fabric for intra-node transfers without host staging.
-CRI lacks even this — no fabric means no `offload` path.
+However, **NIC-to-GPU DMA is supported** on both PVC and CRI via oneCCL's HMEM mechanism
+(`CCL_ATL_HMEM=1`). When enabled, the NIC reads/writes GPU memory directly (via libfabric
+`FI_HMEM_ZE` backed by Linux dmabuf), eliminating the host staging buffer on the data path.
+The host CPU still initiates and manages the transfer, but data does not transit through
+host memory. See [NIC-to-GPU DMA via HMEM](#nic-to-gpu-dma-via-hmem-ccl_atl_hmem--experimental)
+for details.
+
+PVC with Xe Link additionally supports `offload` mode for send/recv, where the library
+uses Xe Link fabric for intra-node transfers without host staging. CRI lacks this — no
+fabric means no `offload` path for intra-node communication.
 
 On CRI, the GPU has no path to initiate network I/O:
 
@@ -251,7 +266,7 @@ abstracted behind libfabric's `FI_HMEM` API.
 ### No Hardware-Specific Gating
 
 HMEM has **no device-family restrictions** in oneCCL. It is purely a
-transport-layer feature — it works on any Intel GPU (PVC, ARC, or future Xe3)
+transport-layer feature — it works on any Intel GPU (PVC, ARC, CRI/Xe3)
 if the following conditions are met:
 
 **Requirements:**
@@ -264,12 +279,27 @@ if the following conditions are met:
 - Intel GPU driver with dmabuf export support
 - RDMA-capable NIC with verbs provider supporting `FI_HMEM_ZE`
 
-### Separate Mechanism: CCL_SYCL_ENABLE_DIRECT_GPU_RDMA
+CRI (device ID `0x6740`, family8) is **not blocked** from any of these paths.
 
-There is a separate, newer path (`CCL_SYCL_ENABLE_DIRECT_GPU_RDMA`, default 0) in the
-SYCL collective layer that passes GPU buffers directly to MPI operations. Unlike HMEM,
-this path **is** hardware-gated: `should_disable_rdma()` in `ze_primitives.cpp` disables
-it for specific ARC B-series device IDs. This gate does not affect the ATL/HMEM path.
+### All GPU Direct Mechanisms in oneCCL
+
+HMEM is not the only path. oneCCL provides five mechanisms for avoiding host staging:
+
+| Mechanism | Env Var | Transport | Default | CRI Compatible |
+|---|---|---|---|---|
+| **OFI HMEM** | `CCL_ATL_HMEM=1` | OFI (verbs/cxi/psm3) | Off | Yes |
+| **Direct GPU RDMA** | `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` | MPI only | Off | Yes (not in blocklist) |
+| **Pipeline GPU RDMA** | `CCL_SYCL_ENABLE_PIPELINE_GPU_RDMA=1` | MPI only | Off | Yes |
+| **pt2pt offload** | `CCL_SEND=offload` / `CCL_RECV=offload` | OFI (PSM3_GPUDIRECT) or MPI | Off | Requires PSM3 |
+| **MPI HMEM** | `CCL_ATL_HMEM=1` + `CCL_ATL_TRANSPORT=mpi` | MPI (sets I_MPI_OFFLOAD=2) | Off | Yes |
+
+**OFI HMEM** is the primary mechanism for CRI with OFI transport (the recommended
+transport for inference). The SYCL-based mechanisms (Direct GPU RDMA, Pipeline GPU RDMA)
+are alternatives that work through MPI transport only and are gated by
+`should_disable_rdma()` — CRI falls to the `default` case which does **not** disable RDMA.
+
+Note: `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` is explicitly disabled when `CCL_ATL_TRANSPORT=ofi`
+(the recommended transport). It only works via MPI transport with `I_MPI_OFFLOAD` set.
 
 ### Production Readiness
 
