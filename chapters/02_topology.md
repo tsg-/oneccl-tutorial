@@ -60,15 +60,15 @@ CCL_LOG_LEVEL=info python script.py 2>&1 | grep -i "ring order"
 What collective do you need?
 │
 ├── Allreduce (TP layer sync)
-│     ├── msg < 1MB, TP <= 8  →  Ring (LL/LL-64)  ✓ Done
-│     └── msg > 1MB           →  Ring (Simple)     ✓ Done
+│     ├── msg < 1MB, TP <= 8  →  Ring              ✓ Done
+│     └── msg > 1MB           →  Ring (pipelined)  ✓ Done
 │
 ├── Allgather (sequence parallelism)
-│     └── any size            →  Ring (LL/LL-64)  ✓ Done
+│     └── any size            →  Ring              ✓ Done
 │
 ├── Alltoall (MoE expert routing)
-│     ├── scale-up (intra-node) →  Hierarchical   ✓ Done
-│     └── scale-out (inter-node) → Hierarchical   ✓ Done
+│     ├── scale-up (intra-node) →  topo           ✓ Done
+│     └── scale-out (inter-node) → scatter        ✓ Done
 │                                  (Direct/Ring = X, gap)
 │
 ├── Scatter/Gather (KV routing)
@@ -85,9 +85,9 @@ Unlike NVLink hardware where One-Shot wins below ~1MB, NUMA flips the crossover:
 
 | Message Size | NUMA-Optimal Algorithm | Reason |
 |---|---|---|
-| < 64 KB | Ring (LL kernels) | Low latency, fits in L3/IOLLC |
-| 64 KB -- 4 MB | Ring (LL-64) | Pipelined, PCIe bandwidth fills |
-| > 4 MB | Ring (Simple/Large) | Bandwidth-bound, Ring optimal |
+| < 64 KB | Ring (small-message path) | Low latency, fits in L3/IOLLC |
+| 64 KB -- 4 MB | Ring (pipelined RS+AG) | Pipelined reduce-scatter + allgather fills PCIe bandwidth |
+| > 4 MB | Ring (large-message path) | Bandwidth-bound, ring optimal |
 | Any | NOT One-Shot | Fan-out saturates PCIe |
 
 ## Practical Verification

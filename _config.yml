@@ -1,5 +1,5 @@
 title: "oneCCL: Collective Communications for Inference"
-author: "Intel AI Group -- CCO Team"
+author: "oneCCL Tutorial"
 # logo: _static/intel_logo.png   # add logo file here when available
 
 repository:
@@ -27,6 +27,10 @@ html:
   comments:
     hypothesis: false
 
+exclude_patterns:
+  - .venv
+  - "**.ipynb_checkpoints"
+
 sphinx:
   extra_extensions:
     - sphinx_copybutton
@@ -36,5 +40,6 @@ sphinx:
     html_theme_options:
       primary_sidebar_end: []
       show_toc_level: 2
+    html_baseurl: "https://tsg-.github.io/oneccl-tutorial/"
     copybutton_prompt_text: ">>> |\\$ |\\[\\d+\\]: "
     copybutton_prompt_is_regexp: true

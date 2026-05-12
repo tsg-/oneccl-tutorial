@@ -49,48 +49,77 @@ export CCL_ATL_TRANSPORT=ofi
 
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
-| `CCL_WORKER_COUNT` | Integer ≥ 1 | `1` | `1` for decode, `2` for prefill |
+| `CCL_WORKER_COUNT` | Integer ≥ 1 | `1` | `1` (GPU buffers: Intel recommends ≤ 1) |
 | `CCL_WORKER_AFFINITY` | Core list, e.g. `2,3` | Auto | Pin to non-NUMA-boundary cores |
 
 Worker threads are the oneCCL internal threads that drive the collective progress engine.
-More workers can help throughput-bound prefill workloads. For decode (latency-bound, one
-collective at a time), extra workers just waste CPU cores and add scheduling noise.
+For GPU (XPU) buffers — which is the case on CRI — Intel's documentation explicitly
+recommends keeping `CCL_WORKER_COUNT=1`. Extra workers can help CPU-buffer workloads but
+add scheduling noise without benefit on GPU paths.
 
 ```bash
-# Decode: single worker, let MPI rank own the core
+# GPU buffers (CRI default): always 1 worker
 export CCL_WORKER_COUNT=1
-
-# Prefill: two workers can help overlap large allreduces
-export CCL_WORKER_COUNT=2
-export CCL_WORKER_AFFINITY=4,5   # pin to specific cores away from GPU NUMA domain
+export CCL_WORKER_AFFINITY=4   # pin to a core away from GPU NUMA domain
 ```
 
 ---
 
-### Algorithm Selection
+### Algorithm Selection (Scale-Up / Level Zero Path)
+
+For **GPU buffers**, the default algorithm is `topo` for all collectives. The `topo` algorithm
+implements a topology-aware hierarchical approach (scale-up via Level Zero IPC + scaleout via
+the transport layer). **If you set `CCL_<COLL>=<non-topo>`, oneCCL copies GPU data to the host
+and runs the specified CPU algorithm** — this is almost never what you want for inference.
+
+| Variable | Values | Default (GPU) | Recommendation |
+|---|---|---|---|
+| `CCL_ALLREDUCE` | `topo`, `ring`, `recursive_doubling`, `rabenseifner`, `nreduce`, `double_tree`, `2d`, `ring_rma`, `direct` | `topo` | **Leave unset** (topo) for GPU inference |
+| `CCL_ALLGATHER` | `topo`, `ring`, `flat`, `multi_bcast`, `naive`, `direct` | `topo` | Leave unset (topo) |
+| `CCL_ALLTOALL` | `topo`, `naive`, `scatter`, `direct` | `topo` | Leave unset (topo) |
+| `CCL_REDUCE_SCATTER` | `topo`, `ring`, `naive`, `direct` | `topo` | Leave unset (topo) |
+| `CCL_BCAST` | `topo`, `ring`, `double_tree`, `naive`, `direct` | `topo` | Leave unset (topo) |
+
+### Algorithm Selection (Scaleout)
+
+To control the **scaleout phase only** (inter-node communication) without disabling the
+GPU-native scale-up path, use the `_SCALEOUT` variants:
 
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
-| `CCL_ALLREDUCE` | `ring`, `recursive_doubling`, `rabenseifner`, `nreduce`, `direct`, `auto` | `auto` | **`ring`** on NUMA-only |
-| `CCL_ALLGATHER` | `ring`, `flat`, `multi_bcast`, `auto` | `auto` | `ring` or `auto` |
-| `CCL_ALLTOALL` | `scatter_gather`, `scatter_gather_barrier`, `topo`, `auto` | `auto` | `auto` (uses hierarchical) |
-| `CCL_REDUCE_SCATTER` | `ring`, `direct`, `auto` | `auto` | `ring` or `auto` |
-| `CCL_BCAST` | `ring`, `double_tree`, `naive`, `auto` | `auto` | leave `auto` |
+| `CCL_ALLREDUCE_SCALEOUT` | `ring`, `rabenseifner`, `nreduce`, `double_tree`, `direct` | `ring` | `ring` on NUMA-only |
+| `CCL_ALLGATHER_SCALEOUT` | `ring`, `naive`, `flat`, `multi_bcast`, `direct` | `ring` | `ring` |
+| `CCL_ALLTOALL_SCALEOUT` | `naive`, `scatter` | `scatter` | Leave default |
+| `CCL_REDUCE_SCATTER_SCALEOUT` | `ring`, `naive`, `direct` | `naive` | `ring` for large messages |
 
-**When to override vs. leave auto:**
-- Override `CCL_ALLREDUCE=ring` if you observe high p95 variance — `auto` can occasionally
-  select a suboptimal algorithm for edge-case message sizes
-- Leave `CCL_ALLTOALL` on `auto` — the hierarchical algorithm selection is non-trivial and
-  the auto path handles it correctly
-- For benchmarking, always pin the algorithm to isolate its performance
+### SYCL Path Scaleout (2021.14+)
 
-> **Why ring for allreduce on NUMA-only:** See [Foundations §4.5](00_foundations) and
-> [Topology & Algorithm Selection](02_topology). One-Shot and Direct algorithms require
+Starting with oneCCL 2021.14, the SYCL path is the default. These variables control its
+scaleout algorithm:
+
+| Variable | Values | Default |
+|---|---|---|
+| `CCL_SYCL_ALLREDUCE_SCALEOUT` | `auto`, `ring`, `rabenseifner`, `direct` | `auto` |
+| `CCL_SYCL_ALLGATHERV_SCALEOUT` | `auto`, `ring`, `direct` | `auto` |
+| `CCL_SYCL_REDUCE_SCATTER_SCALEOUT` | `auto`, `ring`, `direct` | `auto` |
+
+**When to override:**
+- For single-node CRI (no scaleout), the defaults are correct — leave everything unset
+- For multi-node, use `CCL_ALLREDUCE_SCALEOUT=ring` to force ring scaleout if the
+  auto selection picks a suboptimal algorithm for your message sizes
+- Leave `CCL_ALLTOALL` on its default — the topo algorithm handles the scale-up/scaleout
+  split correctly
+- For benchmarking, pin both scale-up and scaleout algorithms to isolate performance
+
+> **Why ring for scaleout on NUMA-only:** See [Foundations §5.6](00_foundations) and
+> [Topology & Algorithm Selection](02_topology). Direct algorithms require
 > simultaneous fan-out which serializes on shared PCIe. Ring pipelines through the fabric.
 
 ```bash
-export CCL_ALLREDUCE=ring
-export CCL_ALLGATHER=ring
+# Single-node CRI: leave CCL_ALLREDUCE unset (topo handles scale-up)
+# Multi-node: control scaleout only
+export CCL_ALLREDUCE_SCALEOUT=ring
+export CCL_ALLGATHER_SCALEOUT=ring
 ```
 
 ---
@@ -100,7 +129,7 @@ export CCL_ALLGATHER=ring
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
 | `CCL_LOG_LEVEL` | `error`, `warn`, `info`, `debug`, `trace` | `warn` | `warn` in production, `info` to verify ring construction |
-| `CCL_ITT_LEVEL` | `0`, `1`, `2` | `0` | `1` for VTune profiling |
+| `CCL_ITT_LEVEL` | `0`, `1` | `0` | `1` for VTune profiling |
 
 ```bash
 # Verify ring construction — look for "ring order" in output
@@ -116,7 +145,7 @@ export CCL_LOG_LEVEL=warn
 
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
-| `CCL_PRIORITY` | `none`, `lifo` | `none` | `lifo` for decode (last-in-first-out prioritizes the newest collective) |
+| `CCL_PRIORITY` | `none`, `lifo`, `direct` | `none` | `lifo` for decode (last-in-first-out prioritizes the newest collective) |
 | `CCL_SPIN_COUNT` | Integer | Platform default | Increase to reduce yield latency for small messages |
 
 `CCL_PRIORITY=lifo` tells the progress engine to deprioritize stale collective handles.
@@ -128,10 +157,9 @@ This matters if you have async collectives pending from a previous iteration tha
 
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
-| `CCL_CHUNK_COUNT` | Integer | Auto | For ring algorithm: number of pipeline stages. Increasing can improve bandwidth utilization for very large messages. Leave auto for inference. |
-| `CCL_MIN_CHUNK_SIZE` | Bytes | Auto | Minimum chunk size in ring pipeline. Auto is usually correct. |
-| `CCL_BUFFER_SIZE` | Bytes | Auto | Internal staging buffer. May need increase for very large alltoall. |
-| `CCL_ZE_COPY_ENGINE` | `main`, `link` | `main` | On systems with copy engines, `link` uses the dedicated copy engine |
+| `CCL_RS_CHUNK_COUNT` | Integer | Auto | For ring algorithm: number of pipeline stages on the reduce-scatter phase. Increasing can improve bandwidth utilization for very large messages. Leave auto for inference. |
+| `CCL_RS_MIN_CHUNK_SIZE` | Bytes | Auto | Minimum chunk size in ring reduce-scatter pipeline. Auto is usually correct. |
+| `CCL_ZE_COPY_ENGINE` | `none`, `main`, `link`, `auto` | `main` | On systems with copy engines, `link` uses the dedicated link copy engine |
 
 ---
 
@@ -187,11 +215,12 @@ export I_MPI_SHM=1
 export CCL_ATL_TRANSPORT=ofi
 export I_MPI_FABRICS=shm:ofi
 
-# Algorithm
-export CCL_ALLREDUCE=ring
-export CCL_ALLGATHER=ring
+# Algorithm: leave CCL_ALLREDUCE unset — topo (default) handles GPU scale-up.
+# Control scaleout phase only (relevant for multi-node):
+export CCL_ALLREDUCE_SCALEOUT=ring
+export CCL_ALLGATHER_SCALEOUT=ring
 
-# Workers: 1 per rank for decode
+# Workers: 1 per rank for GPU buffers
 export CCL_WORKER_COUNT=1
 
 # Priority: LIFO for decode hot path
@@ -216,7 +245,7 @@ mpirun -n 8 -ppn 8 python decode_server.py
 # Use this when diagnosing performance issues
 
 export CCL_ATL_TRANSPORT=ofi
-export CCL_ALLREDUCE=ring
+export CCL_ALLREDUCE_SCALEOUT=ring
 export CCL_WORKER_COUNT=1
 export I_MPI_PIN_DOMAIN=socket
 export I_MPI_FABRICS=shm:ofi

@@ -1,4 +1,4 @@
-jupyter-book>=0.15
+jupyter-book>=0.15,<2.0
 sphinx-copybutton
 sphinx-togglebutton
 matplotlib

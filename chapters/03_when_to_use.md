@@ -53,7 +53,7 @@ What are you synchronizing?
 ├── Sequence sharding before attention (SP)
 │   └── → Allgather
 │       Each rank holds seq/N tokens. Need full context for attention.
-│       Size grows with sequence length — may be large. Ring (LL-64) on CRI.
+│       Size grows with sequence length — may be large. Ring (pipelined RS+AG) on CRI.
 │
 ├── MoE expert routing — tokens to experts
 │   └── → Alltoall (or Alltoallv)
@@ -155,7 +155,7 @@ The following collectives have known gaps on CRI (NUMA-only, as of mid-2025):
 |---|---|---|
 | Scatter (intra-node) | Ring implementation in P0 | For small data: use Broadcast + local select. For KV: use NIXL. |
 | Gather (intra-node) | Same as Scatter, P0 | Use Reduce-Scatter (and discard unused chunks) |
-| Alltoall (inter-node, scale-out) | Direct/Ring algorithms missing; Hierarchical only | Use Hierarchical (it works); file a bug if latency is unacceptable |
+| Alltoall (inter-node, scale-out) | Direct/Ring algorithms missing; topo+scatter only | Use topo (it works); file a bug if latency is unacceptable |
 | Reduce-Scatter (async) | Async variants less tested on XPU | Test with sync first; file bug with repro if async differs |
 
 For anything not in the "Done" column in [the overview table](../intro), verify with a
@@ -167,11 +167,11 @@ correctness test before deploying.
 
 | Inference Pattern | Collective | Size Regime | Algorithm (CRI) |
 |---|---|---|---|
-| TP decode (batch=1) | Allreduce | < 64 KB | Ring LL |
-| TP decode (batch=16+) | Allreduce | 64 KB–4 MB | Ring LL-64 |
+| TP decode (batch=1) | Allreduce | < 64 KB | Ring (small-msg) |
+| TP decode (batch=16+) | Allreduce | 64 KB–4 MB | Ring (pipelined RS+AG) |
 | TP prefill (long ctx) | Allreduce or ReduceScatter | > 1 MB | Ring |
-| SP attention gather | Allgather | 0.5–32 MB | Ring LL-64 |
-| MoE routing (uniform) | Alltoall | varies | Hierarchical |
-| MoE routing (skewed) | Alltoallv | varies | Hierarchical |
+| SP attention gather | Allgather | 0.5–32 MB | Ring (pipelined) |
+| MoE routing (uniform) | Alltoall | varies | topo (scale-up) + scatter (scaleout) |
+| MoE routing (skewed) | Alltoallv | varies | topo (scale-up) + scatter (scaleout) |
 | Control sync (EOS) | Allreduce MAX | < 1 KB | Any |
 | KV cache P→D | — | GB-scale | **NIXL** (not oneCCL) |

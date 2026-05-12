@@ -59,12 +59,12 @@ in ring construction is critical. See [Topology & Algorithm Selection](02_topolo
 | Variable | Purpose | Recommended for Inference |
 |---|---|---|
 | `CCL_ATL_TRANSPORT` | `mpi` or `ofi` | `ofi` (lower overhead) |
-| `CCL_WORKER_COUNT` | oneCCL worker threads per process | `1` for decode, `2` for prefill |
+| `CCL_WORKER_COUNT` | oneCCL worker threads per process | `1` (Intel recommends ≤ 1 for GPU buffers) |
 | `CCL_LOG_LEVEL` | `error`, `warn`, `info`, `debug` | `warn` in prod |
-| `CCL_ALLREDUCE` | Algorithm override: `ring`, `recursive_doubling` | `ring` on NUMA-only |
+| `CCL_ALLREDUCE` | Scale-up algorithm (default `topo` for GPU) | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
 | `CCL_PRIORITY` | Task priority mode | `lifo` for low-latency |
 | `I_MPI_PIN_DOMAIN` | MPI rank-to-core pinning | Match NUMA domains |
-| `I_MPI_FABRICS` | `shm:ofa` or `shm:ofi` | `shm:ofi` |
+| `I_MPI_FABRICS` | `shm:ofi`, `ofi`, `tcp` | `shm:ofi` |
 
 ## oneCCL vs Alternatives
 
@@ -74,6 +74,6 @@ in ring construction is critical. See [Topology & Algorithm Selection](02_topolo
 | **NCCL** | NVIDIA | No | Mature | NVLink-optimized |
 | **RCCL** | AMD | No | Moderate | ROCm fabric |
 | **UCC** | UCF/NVIDIA | Partial | Experimental | Depends |
-| **NIXL** | Intel | Yes | KV transport only | Via UCX |
+| **NIXL** | NVIDIA | Yes | KV transport only | Via UCX |
 
 For Intel XPU inference: **oneCCL is the only production-grade option.**

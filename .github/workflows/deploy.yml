@@ -23,6 +23,10 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Configure GitHub Pages
+        if: github.event_name == 'push'
+        uses: actions/configure-pages@v4
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 

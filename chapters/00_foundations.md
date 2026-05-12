@@ -375,7 +375,10 @@ Rabenseifner: bandwidth scales as 2nβ — a lg(p)/2 improvement, same as Van de
 **MPICH selection threshold:** binary tree for **≤ 2 KB**, Rabenseifner for **> 2 KB**.
 
 In oneCCL, Rabenseifner is available as `CCL_ALLREDUCE=rabenseifner` (listed as algorithm
-ID 6 in Open MPI's `coll_tuned_allreduce_algorithm` parameter).
+ID 6 in Open MPI's `coll_tuned_allreduce_algorithm` parameter). Note: for GPU buffers,
+setting `CCL_ALLREDUCE` to any value other than `topo` causes oneCCL to copy data to the
+host and run the CPU algorithm. Use `CCL_ALLREDUCE_SCALEOUT=rabenseifner` to select it
+for the scaleout phase only while keeping GPU-native scale-up.
 
 ### 5.6 One-Shot Allreduce (for GPU Fabrics)
 
@@ -498,24 +501,32 @@ Bandwidth bound: β term dominates → minimize bytes on links   → Ring
 With the full model in hand, the oneCCL environment variables map directly:
 
 ```python
+# For GPU buffers: leave CCL_ALLREDUCE unset (default = "topo", the GPU-native path).
+# Control the scaleout algorithm (inter-node) separately:
+
 # Nearest-neighbor ring: T_ring = (p-1)α + ((p-1)/p)nβ
 # Bandwidth-optimal. Topology-aware on NUMA when I_MPI_PIN_DOMAIN=socket.
-os.environ["CCL_ALLREDUCE"] = "ring"
+os.environ["CCL_ALLREDUCE_SCALEOUT"] = "ring"
 
 # Recursive doubling: T_rec_dbl = lg(p)α + ((p-1)/p)nβ
 # Same bandwidth, fewer steps. Use for small messages only.
-os.environ["CCL_ALLREDUCE"] = "recursive_doubling"
+os.environ["CCL_ALLREDUCE_SCALEOUT"] = "recursive_doubling"
 
 # Rabenseifner: T = 2·lg(p)·α + 2·((p-1)/p)·nβ + ((p-1)/p)·nγ
 # Reduce-scatter + gather. Best bandwidth for reduce-heavy workloads.
-os.environ["CCL_ALLREDUCE"] = "rabenseifner"
+os.environ["CCL_ALLREDUCE_SCALEOUT"] = "rabenseifner"
+
+# WARNING: Setting CCL_ALLREDUCE directly (not _SCALEOUT) to any value other than "topo"
+# causes oneCCL to copy GPU buffers to host memory and run a CPU algorithm.
+# For CPU-only workloads, direct setting is fine:
+os.environ["CCL_ALLREDUCE"] = "ring"  # OK for CPU buffers only
 ```
 
 For TP decode on CRI (NUMA-only, batch=1):
 - Message size ≈ 8192 × 2 bytes = **16 KB** → below all crossover thresholds
 - Recursive doubling would be the theoretically correct choice (fewer steps for small msg)
-- **But** Ring is still recommended: the topology-aware nearest-neighbor ring avoids
-  cross-socket UPI contention, which the recursive doubling's distance-doubling pattern
+- **But** Ring is still recommended for scaleout: the topology-aware nearest-neighbor ring
+  avoids cross-socket UPI contention, which recursive doubling's distance-doubling pattern
   cannot exploit. The α-β model assumes all pairs are equal — NUMA violates that assumption.
 
 **Next:** [oneCCL Overview](01_overview) — the oneCCL API surface and where it fits in the stack.

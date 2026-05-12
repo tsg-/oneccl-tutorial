@@ -41,10 +41,10 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 
 | Collective | Primary Algorithm | Status | Inference Use Case |
 |---|---|---|---|
-| Allreduce | Ring (LL/LL-64) | Done | TP layer boundary sync |
-| Allreduce | One-Shot (LL) | P1 | Low-latency decode (small batch) |
-| Allgather | Ring (LL/LL-64) | Done | Sequence parallelism |
-| Alltoall | Hierarchical | Done | MoE expert routing |
+| Allreduce | Ring | Done | TP layer boundary sync |
+| Allreduce | One-Shot | P1 | Low-latency decode (small batch, GPU fabric required) |
+| Allgather | Ring | Done | Sequence parallelism |
+| Alltoall | topo (scale-up + scatter scaleout) | Done | MoE expert routing |
 | Scatter/Gather | Ring | P0 | KV cache distribution |
 
 ## How to Run the Notebooks

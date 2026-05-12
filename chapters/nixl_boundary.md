@@ -22,11 +22,18 @@ through oneCCL. This is wrong. oneCCL and NIXL serve different traffic classes:
 import torch.distributed as dist
 dist.all_reduce(activation, op=dist.ReduceOp.SUM)  # oneCCL handles this
 
-# NIXL path (direct NIXL API or via LMCache)
+# NIXL path (direct NIXL API)
 # -- KV cache transfer from prefill to decode node
-import nixl
-agent = nixl.nixlAgent("decode_worker")
-agent.transfer(kv_tensor, dst_rank=decode_rank, ...)  # NIXL handles this
+from nixl import nixl_agent, nixl_agent_config
+
+config = nixl_agent_config(backends=["UCX"])
+agent = nixl_agent("decode_worker", config)
+
+# Register memory, build transfer descriptors, then initiate transfer
+reg = agent.register_memory(kv_tensor)
+local_descs = agent.get_xfer_descs([kv_tensor])
+xfer_handle = agent.initialize_xfer("READ", local_descs, remote_descs, "prefill_node", "done")
+state = agent.transfer(xfer_handle)  # NIXL handles this — async RDMA
 ```
 
 ## Why NIXL for KV Transport
