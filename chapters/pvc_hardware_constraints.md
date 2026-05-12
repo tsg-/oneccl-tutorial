@@ -273,11 +273,75 @@ See [Perf Tuning](perf_tuning) for the full variable reference and launch templa
 
 ---
 
+## Published Benchmarks: Collective Performance at Scale
+
+### Aurora Allreduce Latency (PVC + Xe Link + Slingshot-11)
+
+From Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291):
+
+| Message Size | 1 Node (6 GPUs) | 2048 Nodes (~12K GPUs) |
+|---|---|---|
+| 8 B | ~15 µs | ~250 µs |
+| 512 B | ~20 µs | ~250 µs |
+| 2 KB | ~25 µs | ~260 µs |
+| 64 KB | ~50 µs | ~280 µs |
+
+Latency growth is sub-linear (recursive-doubling/tree algorithms). Aurora uses 8×
+Slingshot-11 NICs per node (200 Gbps each), with ~23-25 GB/s per NIC for GPU buffers.
+
+### oneCCL vs Optimized Libraries (Pre-Production Aurora, 2024)
+
+From Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library"
+(arXiv:2408.05962), tested on 4 Aurora nodes (48 GPU tiles):
+
+| Collective | oneCCL Throughput | HiCCL Throughput | Gap |
+|---|---|---|---|
+| Allreduce | ~40-80 GB/s | ~80-120 GB/s | 1.5-2× |
+| Broadcast | ~20-40 GB/s | ~80-120 GB/s | 2-4× |
+| All-to-All | ~20-40 GB/s | ~40-80 GB/s | 2× |
+
+HiCCL reported a **12.1× geometric mean improvement** over oneCCL across all
+collectives. Important caveats:
+- This was pre-production Aurora with early oneCCL (2024)
+- oneCCL's multi-NIC striping and hierarchical algorithms were not yet tuned for
+  Aurora's 12-GPU, 8-NIC topology
+- Production oneCCL has improved significantly since
+
+### Large-Scale Training Efficiency
+
+From Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora"
+(arXiv:2604.00785):
+- 220B parameter MoE model scaled from 384 to 12,288 PVC GPU tiles
+- **~90% scaling efficiency** at 12,288 tiles
+- Communication overhead managed via expert-parallel sharding
+
+### What This Means for CRI
+
+CRI nodes are more constrained than Aurora:
+- No Xe Link (Aurora has 28 GB/s per Xe Link between GPU stacks)
+- Fewer NICs per node (Aurora has 8× Slingshot-11)
+- PCIe-only intra-node path
+
+Expect **higher per-collective latency** and **lower bandwidth** than the Aurora numbers
+above. The Aurora benchmarks represent an upper bound for what Intel GPU collective
+communication achieves with fabric assistance. CRI without fabric will be closer to
+the small-message latency floor (~15-25 µs per collective) but will not scale bandwidth
+as aggressively with message size.
+
+---
+
 ## References
 
+### Hardware & Source
 - [Intel Data Center GPU Max Series (PVC) Product Specs](https://www.intel.com/content/www/us/en/products/sku/232873/intel-data-center-gpu-max-1550/specifications.html) — Xe Link frequency, PCIe Gen5, tile architecture
 - [oneCCL Source: `topo_manager.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/topology/topo_manager.cpp) — `check_p2p_access()`, `check_p2p_atomics()`, fabric connectivity probing
 - [oneCCL Source: `ze_primitives.cpp`](https://github.com/oneapi-src/oneCCL/blob/master/src/sched/entry/ze/ze_primitives.cpp) — `device_family` enum, `should_disable_rdma()`, copy engine selection
 - [oneCCL Documentation: Environment Variables](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/env-variables.rst) — `CCL_ATL_HMEM`, `CCL_ZE_COPY_ENGINE`, `TMP_BUF`, `offload` mode
 - [oneCCL Documentation: dmabuf Support](https://github.com/oneapi-src/oneCCL/blob/master/doc/rst/source/advanced-configuration/dmabuf.rst) — GPU memory registration via Linux dmabuf/OFI verbs
 - [UALink Consortium](https://ualink.org/) — open standard for accelerator interconnects (Intel founding member)
+
+### Benchmarks & Papers
+- Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291, Dec 2025) — MPI collective latency/bandwidth at 2048+ nodes on PVC
+- Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library" (arXiv:2408.05962, Aug 2024) — oneCCL vs optimized collectives on pre-production Aurora
+- Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Aurora" (arXiv:2604.00785, Apr 2026) — 90% scaling efficiency at 12,288 PVC tiles
+- Ma et al., "CoCoDiff: Optimizing Collective Communications for Distributed Diffusion Transformer Inference" (arXiv:2604.14561, Apr 2026) — 3.6× avg speedup for all-to-all on Aurora via topology-aware decomposition
