@@ -6,7 +6,7 @@ and thresholds in §4 and §6 come directly from the primary literature, not app
 
 ---
 
-## 1. Why Multiple Processes Need to Talk
+## 1. Inter-Process Communication in Distributed Inference
 
 A single GPU runs a program sequentially. When you scale a neural network across multiple
 GPUs, each GPU runs a **separate process** with its own memory. They cannot read each
@@ -62,7 +62,7 @@ world_size = dist.get_world_size()       # p = total number of processes
 
 ---
 
-## 3. The Core Collectives — What They Do
+## 3. Core Collective Operations
 
 There are four collectives that matter for inference. Everything else is a specialization.
 
@@ -183,12 +183,12 @@ fails on PCIe-only hardware (see §5.5).
 
 ---
 
-## 5. Algorithms — How Collectives Are Actually Implemented
+## 5. Algorithm Implementations
 
 The same collective can be implemented with many algorithms. The right choice depends
 on message size, number of ranks, and hardware topology.
 
-### 5.1 Naive Allreduce (Star / Centralized Reduce)
+### 5.1 Centralized Reduce (Star Topology)
 
 The obvious approach: all ranks send to rank 0, rank 0 reduces, rank 0 broadcasts.
 
@@ -535,7 +535,7 @@ Bandwidth bound: β term dominates → minimize bytes on links   → Ring
 
 ---
 
-## 8. Connecting to oneCCL
+## 8. Mapping to oneCCL Configuration
 
 With the full model in hand, the oneCCL environment variables map directly:
 

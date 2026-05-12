@@ -10,7 +10,7 @@ This is an internal Intel AI Group / CCO Team resource. Hardware context through
 calibrated accordingly.
 :::
 
-## Who This Is For
+## Audience
 
 **If you are new to distributed ML or collective communication:** start with
 [From First Principles: Collective Communication](chapters/00_foundations). It explains what
@@ -20,7 +20,7 @@ in the rest of the tutorial assumes prior knowledge beyond that chapter.
 **If you know MPI/NCCL basics already:** you can start at
 [oneCCL Overview](chapters/01_overview) and use the Foundations chapter as a reference.
 
-## What You Will Learn
+## Scope
 
 - What collective communication is and why it exists (ranks, allreduce, ring algorithm)
 - Which algorithm families work on NUMA-only hardware and why
@@ -50,7 +50,7 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 **Status:** Done = implemented and available on CRI today. P0 = highest priority,
 actively in development. P1 = planned, pending hardware support (e.g., GPU fabric).
 
-## How to Run the Notebooks
+## Running the Notebooks
 
 Each notebook is designed to be launched via `mpirun` from a JupyterHub terminal:
 

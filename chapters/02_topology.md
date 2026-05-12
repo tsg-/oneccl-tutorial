@@ -18,7 +18,7 @@ Socket 0 (NUMA 0)          Socket 1 (NUMA 1)
 
 Every GPU-to-GPU transfer crosses PCIe and potentially UPI. There is no direct peer path.
 
-## Why This Kills One-Shot Allreduce
+## One-Shot Allreduce Under NUMA
 
 One-Shot Allreduce requires simultaneous fan-out from each GPU to all N-1 peers.
 Under NUMA:

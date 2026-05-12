@@ -23,7 +23,7 @@ All inter-node communication requires host CPU staging.
 
 ---
 
-## GPU Direct DMA: What Neither Generation Has
+## GPU Direct DMA: Absent in Both Generations
 
 **GPU Direct DMA** (also called GPU-initiated communication or GPU RDMA) allows a GPU
 kernel to directly post network operations (RDMA sends/receives) without involving the
@@ -60,7 +60,7 @@ This means:
 
 ---
 
-## No Fabric: How CRI Differs from PVC
+## CRI vs PVC: Absence of Intra-Node Fabric
 
 PVC systems (e.g., Aurora) use Xe Link to form a high-bandwidth mesh between GPUs
 within a node. The `topo` algorithm's scale-up phase exploits this:
@@ -83,7 +83,7 @@ On CRI, even the **scale-up phase** (intra-node) is constrained:
 
 ---
 
-## How oneCCL Handles This: The `topo` Algorithm
+## The `topo` Algorithm: Host-Staged Hierarchical Communication
 
 The `topo` algorithm is oneCCL's solution for GPU hardware without direct network access.
 It splits every collective into phases:
@@ -251,7 +251,7 @@ overlap helps. Double-buffering with `async_op=True` is preferred.
 
 ---
 
-## What Changes with Future Hardware (UALink)
+## Future Hardware: UALink and GPU RDMA
 
 | Constraint | CRI (Xe3) | Future (UALink-equipped) |
 |---|---|---|

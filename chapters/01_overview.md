@@ -1,6 +1,6 @@
 # oneCCL Overview
 
-## What Is oneCCL
+## Overview
 
 **oneAPI Collective Communications Library (oneCCL)** is Intel's distributed communication
 library for deep learning workloads. It provides a unified API across CPUs and Intel GPUs (XPU),

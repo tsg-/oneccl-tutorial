@@ -8,7 +8,7 @@ If you have not read [Foundations](00_foundations) yet, read §3 (what the colle
 
 ---
 
-## The Five Questions to Ask
+## Decision Framework
 
 Before calling any collective, answer these five questions. The answers determine everything.
 
@@ -130,7 +130,7 @@ use the fixed-size `alltoall` with imbalanced routing, you waste bandwidth on pa
 
 ---
 
-## When NOT to Use a Collective
+## Anti-Patterns: When Collectives Are Wrong
 
 These situations are commonly mishandled:
 
