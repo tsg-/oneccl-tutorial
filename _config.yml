@@ -4,7 +4,7 @@ author: "oneCCL Tutorial"
 
 repository:
   url: https://github.com/tsg-/oneccl-tutorial
-  branch: main
+  branch: master
   path_to_book: .
 
 execute:

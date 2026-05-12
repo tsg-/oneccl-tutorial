@@ -2,9 +2,9 @@ name: Build and Deploy Jupyter Book
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 # Only one deploy can run at a time
 concurrency:
