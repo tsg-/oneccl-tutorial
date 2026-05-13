@@ -231,3 +231,6 @@ NCCL optimizes kernel fusion and NVLink scheduling; oneCCL optimizes copy engine
 host staging pipeline depth, and NUMA-aware ring construction.
 
 For Intel XPU inference: **oneCCL is the only production-grade option.**
+
+**Next:** [Topology and Algorithm Selection](02_topology) — why ring construction order
+matters on NUMA hardware and how oneCCL builds topology-aware rings automatically.

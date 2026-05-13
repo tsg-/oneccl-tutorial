@@ -31,7 +31,7 @@ parts:
     chapters:
       - file: chapters/perf_tuning
       - file: chapters/host_staging_scaling
-        title: "Host Staging: Scaling Limits on PVC"
+        title: "Host Staging: The Scaling Wall"
       - file: chapters/native_cpp_api
         title: "Native C++ / SYCL Integration"
       - file: chapters/debugging_profiling

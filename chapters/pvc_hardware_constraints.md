@@ -815,3 +815,8 @@ blocklist — that function only blocks certain ARC B-series desktop cards
 (0xE20B-0xE223) which had driver-level issues with GPU RDMA. All GPU RDMA
 mechanisms (HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available for CRI.
 The AOT compilation targets include `xe3` alongside `pvc` and `xe2`.
+
+**Next:** [When to Use Which Collective](03_when_to_use) — the decision guide for
+picking the right collective for each inference and training pattern. If you're here
+for the hands-on work, start with [Environment Setup](../notebooks/02_environment_setup)
+to verify your stack before running any benchmark.

@@ -1,4 +1,4 @@
-# Why Host Bounce Buffers Limit oneCCL Scaling on PVC-Class Architectures
+# Host Staging: The Scaling Wall
 
 :::{note}
 This is a technical analysis document, not step-by-step instruction. It is written in

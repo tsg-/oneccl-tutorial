@@ -244,3 +244,7 @@ node   0   1
   0:  10  21
   1:  21  10
 ```
+
+**Next:** [GPU Hardware Constraints](pvc_hardware_constraints) — what CRI cannot do
+(no intra-node GPU fabric, no GPU-initiated network I/O) and how that shapes every
+algorithm choice in the notebooks.

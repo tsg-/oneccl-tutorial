@@ -408,3 +408,10 @@ but that is application-level engineering, not collective communication.
 | Pipeline parallelism | P2P send/recv | activation size | dist.isend/irecv |
 | Grad norm (clipping) | Allreduce (SUM) | 8 bytes | Any |
 | Weight broadcast (startup) | Broadcast | Full model (GB) | Van de Geijn (scatter+allgather) |
+
+**Ready to run code?** Start with [Environment Setup](../notebooks/02_environment_setup),
+then work through the notebooks in order:
+[Allreduce](../notebooks/03a_allreduce_walkthrough) →
+[Allgather](../notebooks/03b_allgather) →
+[Alltoall / MoE](../notebooks/03c_alltoall_moe) →
+[End-to-End TP Decode](../notebooks/04_inference_tp_decode)

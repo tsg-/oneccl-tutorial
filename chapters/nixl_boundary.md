@@ -245,3 +245,7 @@ The one exception: if you are building a **training + inference co-location syst
 where training and serving share a cluster, you may want NIXL for serving-side KV
 transfer while oneCCL handles training collectives. Keep the two process groups
 completely separate — they should not share a communicator or transport endpoint.
+
+**Next:** [Performance Tuning Reference](perf_tuning) — the complete `CCL_*` and
+`I_MPI_*` variable catalog, or return to the [hands-on notebooks](../notebooks/04_inference_tp_decode)
+to see the full TP decode loop assembled.
