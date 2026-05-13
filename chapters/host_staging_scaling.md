@@ -301,8 +301,10 @@ for messages in the 8–1024 KB range that take multiple ring steps):
 | 512 | 9 | 9 * (4 + 0.5) = 41 us | 9 * (16 + 0.5) = 149 us |
 | 2048 | 11 | 11 * (4 + 0.5) = 50 us | 11 * (16 + 0.5) = 182 us |
 
-The Aurora benchmark (arXiv 2512.04291) measures ~250 us at 2048 nodes for
-small messages. The gap between the 182 us model above and 250 us accounts
+The Aurora benchmark (Ibeid et al., arXiv:2512.04291, Figure 14:
+"Latency for MPI reduction operation for buffers located in GPU memory")
+measures ~250 us at 2048 nodes for 8-byte messages. The gap between the
+182 us model above and 250 us accounts
 for: oneCCL scheduler overhead, SYCL event graph management, atl_comm
 endpoint contention, and the intra-node Xe Link phases within each PVC node
 that are serialized before the inter-node step.
@@ -379,12 +381,14 @@ T_D2H_uncontended = 16 KB / 32 GB/s = ~0.5 us
 ```
 
 The 6x contention factor is one reason the per-step latency significantly
-exceeds what network hardware alone would require. Aurora uses 8x Slingshot-11
-NICs (200 Gbps each = 25 GB/s per NIC), providing 200 GB/s aggregate NIC
-bandwidth. The 2 GPUs at 32 GB/s each = 64 GB/s total PCIe capacity to host.
-**The PCIe supply is 3x undersupplied relative to NIC demand.** This explains
-why Aurora measures 23-25 GB/s per NIC rather than the 25 GB/s theoretical
-maximum: the staging path saturates before the NICs do.
+exceeds what network hardware alone would require. Aurora uses 8 Slingshot-11
+Cassini NICs (200 Gbps each = 25 GB/s per NIC), providing 200 GB/s aggregate
+NIC bandwidth (Ibeid et al., Figure 1). The 6 GPUs connect via PCIe Gen5 x16
+at 64 GB/s per link (Figure 1). **The PCIe supply is 3× undersupplied relative
+to NIC demand.** This explains why Aurora measures ~23 GB/s effective per NIC
+(Ibeid et al., Figure 12: "Bandwidth for point-to-point communication
+operations with buffers located in GPU memory") rather than the 25 GB/s
+theoretical maximum: the staging path saturates before the NICs do.
 
 ### 4.2 Sequential Stages with No Pipelining
 
@@ -867,12 +871,19 @@ benchmark results and tuning guidance.
 
 ## 6. Empirical Validation from Aurora
 
-The Aurora benchmark data (Ibeid et al., arXiv 2512.04291) shows:
+The Aurora benchmark data (Ibeid et al., arXiv:2512.04291, Figure 14:
+"Latency for MPI reduction operation for buffers located in GPU memory")
+shows MPI_Allreduce latency with GPU-resident buffers scaling from 1 to
+2048 nodes. Reading from Figure 14:
 
 | Message | 1 node | 2048 nodes | Ratio |
 |---|---|---|---|
 | 8 B | ~15 us | ~250 us | 16.7x |
 | 64 KB | ~50 us | ~280 us | 5.6x |
+
+The paper notes: "Less than linear latency growth is observed, which is
+typical for a recursive-doubling tree algorithm. A switch from a ring
+algorithm to a tree algorithm is clearly seen on the curves."
 
 For 8 B (effectively zero bandwidth term), latency scales 16.7x across 11
 effective inter-node doubling steps (log₂(2048) = 11, plus intra-node phases).
