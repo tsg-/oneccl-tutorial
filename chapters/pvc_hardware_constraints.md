@@ -144,6 +144,7 @@ For a 2-node allreduce with TP=4 per node, the full data flow:
   │         ▼                 │       │         ▼                 │
   │   Allgather local         │       │   Allgather local         │
   │   ┌─────┬─────┬─────┐     │       │   ┌─────┬─────┬─────┐     │
+  │   │     │     │     │     │       │   │     │     │     │     │
   │ GPU0  GPU1  GPU2  GPU3    │       │ GPU4  GPU5  GPU6  GPU7    │
   └───────────────────────────┘       └───────────────────────────┘
 ```

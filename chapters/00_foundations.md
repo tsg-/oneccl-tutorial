@@ -33,6 +33,32 @@ link carries redundant traffic.
 **Collective communication** solves these "all need all" problems efficiently by exploiting
 the structure of what everyone is computing.
 
+What does "exploiting structure" mean concretely? Consider ring allreduce vs. the naive approach
+for N=4 GPUs, each with value `v_i`:
+
+```
+Naive all-pairs (12 messages, every link carries full redundant copies):
+  GPU0 sends v_0 to GPU1, GPU2, GPU3   │  GPU1 sends v_1 to GPU0, GPU2, GPU3
+  GPU2 sends v_2 to GPU0, GPU1, GPU3   │  GPU3 sends v_3 to GPU0, GPU1, GPU2
+  Each GPU receives 3 messages, does 3 additions. 12 transfers total, 3M bytes/GPU.
+
+Ring allreduce (8 messages, pipeline partial sums):
+  Step 1 (reduce-scatter):
+    GPU0 → GPU1: v_0          GPU1 → GPU2: v_1          GPU2 → GPU3: v_2          GPU3 → GPU0: v_3
+    GPU1 accumulates: v_0+v_1  GPU2: v_1+v_2  GPU3: v_2+v_3  GPU0: v_3+v_0
+  Step 2 (reduce-scatter):
+    GPU0 → GPU1: v_3+v_0      GPU1 → GPU2: v_0+v_1      GPU2 → GPU3: v_1+v_2      GPU3 → GPU0: v_2+v_3
+    GPU1: v_0+v_1+v_2+v_3  GPU2: v_0+v_1+v_2+v_3  (one shard each has full sum)
+  Steps 3-4 (allgather): distribute the completed shards.
+
+  Each GPU sends/receives exactly M bytes total — same bandwidth, but each link carries
+  unique partial sums that can't be skipped. No redundant traffic.
+```
+
+The structure being exploited is that every GPU has the same **kind** of value (a partial sum),
+so passing it around a ring lets each intermediate GPU add its own contribution before forwarding.
+The naive approach ignores this — it sends raw values and does all the addition at the destination.
+
 ### Concrete Example: Llama-3 70B with TP=4
 
 In Llama-3 70B, a single transformer layer contains these weight matrices:
