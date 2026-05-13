@@ -1,7 +1,7 @@
 # Performance Tuning Reference
 
 This chapter is a reference card for every `CCL_*` and `I_MPI_*` environment variable
-that matters for inference on CRI hardware. All settings assume NUMA-only topology (no
+that matters for inference on BMG/CRI hardware. All settings assume NUMA-only topology (no
 XeLink/UALink).
 
 ---
@@ -53,12 +53,12 @@ export CCL_ATL_TRANSPORT=ofi
 | `CCL_WORKER_AFFINITY` | Core list, e.g. `2,3` | Auto | Pin to non-NUMA-boundary cores |
 
 Worker threads are the oneCCL internal threads that drive the collective progress engine.
-For GPU (XPU) buffers — which is the case on CRI — Intel's documentation explicitly
+For GPU (XPU) buffers — which is the case on BMG/CRI — Intel's documentation explicitly
 recommends keeping `CCL_WORKER_COUNT=1`. Extra workers can help CPU-buffer workloads but
 add scheduling noise without benefit on GPU paths.
 
 ```bash
-# GPU buffers (CRI default): always 1 worker
+# GPU buffers (BMG/CRI default): always 1 worker
 export CCL_WORKER_COUNT=1
 export CCL_WORKER_AFFINITY=4   # pin to a core away from GPU NUMA domain
 ```
@@ -104,7 +104,7 @@ scaleout algorithm:
 | `CCL_SYCL_REDUCE_SCATTER_SCALEOUT` | `auto`, `ring`, `direct` | `auto` |
 
 **When to override:**
-- For single-node CRI (no scaleout), the defaults are correct — leave everything unset
+- For single-node BMG/CRI (no scaleout), the defaults are correct — leave everything unset
 - For multi-node, use `CCL_ALLREDUCE_SCALEOUT=ring` to force ring scaleout if the
   auto selection picks a suboptimal algorithm for your message sizes
 - Leave `CCL_ALLTOALL` on its default — the topo algorithm handles the scale-up/scaleout
@@ -116,7 +116,7 @@ scaleout algorithm:
 > simultaneous fan-out which serializes on shared PCIe. Ring pipelines through the fabric.
 
 ```bash
-# Single-node CRI: leave CCL_ALLREDUCE unset (topo handles scale-up)
+# Single-node BMG/CRI: leave CCL_ALLREDUCE unset (topo handles scale-up)
 # Multi-node: control scaleout only
 export CCL_ALLREDUCE_SCALEOUT=ring
 export CCL_ALLGATHER_SCALEOUT=ring

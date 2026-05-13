@@ -1,7 +1,7 @@
 # oneCCL Inference Tutorial
 
 Internal tutorial covering oneCCL collective communications for inference workloads
-on CRI hardware (NUMA-only topology).
+on BMG/CRI hardware (NUMA-only topology).
 
 ## Build the Site
 
@@ -56,5 +56,5 @@ oneccl-tutorial/
 
 ## Hardware Assumptions
 
-All content calibrated for **CRI nodes: NUMA-only, no UALink/XeLink**.
+All content calibrated for **BMG/CRI nodes: NUMA-only, no UALink/XeLink**.
 Algorithm selection (Ring preferred, One-Shot deprioritized) reflects this topology.

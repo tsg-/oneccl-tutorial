@@ -12,7 +12,7 @@ The practical summary for day-to-day use is in [Performance Tuning](perf_tuning)
 
 ## Abstract
 
-Intel Xe GPU architectures (PVC, CRI) require all inter-node collective
+Intel Xe GPU architectures (PVC, BMG/CRI) require all inter-node collective
 communication to pass through host DRAM by default. This "host bounce buffer"
 design imposes a fixed per-step latency penalty that compounds across every
 step of a distributed collective algorithm. At small node counts the overhead
@@ -60,7 +60,7 @@ wall from roughly 64 nodes to roughly 8-16 nodes.
 
 ## 2. The Host Bounce Buffer Mechanism
 
-On PVC and CRI, GPU kernels cannot issue network operations. The NIC is not
+On PVC and BMG/CRI, GPU kernels cannot issue network operations. The NIC is not
 accessible from GPU-side code. Data must bounce through host DRAM on both
 the send and receive sides:
 
@@ -209,7 +209,7 @@ ring + multi-node + single-worker-mode. For the default scaleout path through
 
 ### 2.3 Latency Budget Per Collective Step
 
-For a 16 KB message on a PVC/CRI node (PCIe Gen4/5, ~32 GB/s effective):
+For a 16 KB message on a PVC/BMG/CRI node (PCIe Gen4/5, ~32 GB/s effective):
 
 | Operation | Notes | Latency |
 |---|---|---|
@@ -286,7 +286,7 @@ via the threshold in `selector_allreduce.cpp`.
 ### 3.3 The topo Hierarchical Algorithm
 
 `topo` reduces inter-node traffic by performing an intra-node reduce-scatter
-first (Xe Link on PVC, PCIe P2P on CRI), then running the scaleout collective
+first (Xe Link on PVC, PCIe P2P on BMG/CRI), then running the scaleout collective
 on 1/T of the data, where T is the number of tiles per node. The inter-node
 phase still goes through host staging. For a PVC node with 12 tiles:
 
@@ -502,7 +502,7 @@ At 25 GB/s effective PCIe P2P bandwidth (same single-node P2P path used for infe
 Time to move gradients = 21 GB / 25 GB/s = 840 ms
 ```
 
-A 7B model forward + backward pass takes roughly 500–800 ms at batch=32 on a CRI node.
+A 7B model forward + backward pass takes roughly 500–800 ms at batch=32 on a BMG/CRI node.
 This means gradient communication is **already bandwidth-bound at 4 GPUs** with DDP.
 
 ### Why ZeRO Changes the Calculation
@@ -555,7 +555,7 @@ T_compute ≈ 2 × 7×10⁹ × 32 / (100 TFLOPS × 8) ≈ 560 ms
 T_comm > T_compute → bandwidth-bound at 8 GPUs for this config
 ```
 
-**The training wall for oneCCL on CRI is determined by:**
+**The training wall for oneCCL on BMG/CRI is determined by:**
 1. PCIe bandwidth to host staging buffers (same bottleneck as inference)
 2. NIC aggregate bandwidth per node (100/200 GbE × number of NICs)
 3. Model size and batch size
@@ -566,7 +566,7 @@ can be partially mitigated by **gradient compression**, **pipeline parallelism**
 (more compute per byte of gradient). See [When to Use Which Collective — Training](03_when_to_use)
 for the full breakdown.
 
-### Practical Implication for CRI Training Deployments
+### Practical Implication for BMG/CRI Training Deployments
 
 ```
 Model    | Gradients | PCIe BW limit | Max GPUs before BW wall (est.)
@@ -578,7 +578,7 @@ Model    | Gradients | PCIe BW limit | Max GPUs before BW wall (est.)
 ```
 
 These are estimates; the actual wall depends on batch size and whether ZeRO sharding
-is used. The key takeaway: **for large model training on CRI, pipeline parallelism
+is used. The key takeaway: **for large model training on BMG/CRI, pipeline parallelism
 (which avoids large allreduces) is more important than algorithm selection.**
 
 ---

@@ -133,7 +133,7 @@ export CCL_LOG_LEVEL=trace
 CCL_LOG_LEVEL=info mpirun -n 4 python script.py 2>&1 | grep -E "ring|topo|p2p|ipc|scale"
 ```
 
-Expected healthy output for a 4-GPU CRI node:
+Expected healthy output for a 4-GPU BMG/CRI node:
 
 ```
 [CCL][info] topo_manager: p2p access: GPU0<->GPU1 OK (PCIe), GPU0<->GPU2 OK (UPI), ...

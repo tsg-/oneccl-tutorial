@@ -2,7 +2,7 @@
 
 This chapter is a decision guide for both inference and training. It maps workload patterns
 to collective choices, explains the "why" behind each recommendation, and flags the gaps on
-CRI hardware today.
+BMG/CRI hardware today.
 
 If you have not read [Foundations](00_foundations) yet, read §3 (what the collectives do) and
 §4 (algorithms) first.
@@ -60,7 +60,7 @@ What are you synchronizing?
 ├── Sequence sharding before attention (SP)
 │   └── → Allgather
 │       Each rank holds seq/N tokens. Need full context for attention.
-│       Size grows with sequence length — may be large. Ring (pipelined RS+AG) on CRI.
+│       Size grows with sequence length — may be large. Ring (pipelined RS+AG) on BMG/CRI.
 │
 ├── MoE expert routing — tokens to experts
 │   └── → Alltoall (or Alltoallv)
@@ -197,9 +197,9 @@ NIXL is for directed data movement between prefill and decode nodes.**
 
 ---
 
-## CRI Hardware Gaps and Workarounds
+## BMG/CRI Hardware Gaps and Workarounds
 
-The following collectives have known gaps on CRI (NUMA-only, as of mid-2025):
+The following collectives have known gaps on BMG/CRI (NUMA-only, as of mid-2025):
 
 | Collective | Gap | Workaround |
 |---|---|---|
@@ -215,7 +215,7 @@ correctness test before deploying.
 
 ## Quick Reference: Inference Collective Cheat Sheet
 
-| Inference Pattern | Collective | Size Regime | Algorithm (CRI) |
+| Inference Pattern | Collective | Size Regime | Algorithm (BMG/CRI) |
 |---|---|---|---|
 | TP decode (batch=1) | Allreduce | < 64 KB | Ring (small-msg) |
 | TP decode (batch=16+) | Allreduce | 64 KB–4 MB | Ring (pipelined RS+AG) |
@@ -345,7 +345,7 @@ on the opposite side of all of them:
 | ZeRO-3 Allgather (training) | one layer / N_ranks | **100 MB–1 GB** — BW-bound | Ring |
 | DP Allreduce (training, DDP) | 7B model BF16 | **14 GB total** (streamed per layer) | Ring |
 
-**For training on CRI:** ring is always correct. The 512 KB threshold from Foundations §7
+**For training on BMG/CRI:** ring is always correct. The 512 KB threshold from Foundations §7
 is irrelevant — training collective messages are 3-4 orders of magnitude larger. The
 important configuration is ensuring `CCL_ALLREDUCE_SCALEOUT=ring` and that NUMA pinning
 is correct so intra-node ring steps stay on-socket.
@@ -398,7 +398,7 @@ but that is application-level engineering, not collective communication.
 
 ## Quick Reference: Training Collective Cheat Sheet
 
-| Training Pattern | Collective | Size Regime | Algorithm (CRI) |
+| Training Pattern | Collective | Size Regime | Algorithm (BMG/CRI) |
 |---|---|---|---|
 | DDP gradient sync | Allreduce | GB-scale (per-layer stream) | Ring |
 | ZeRO-2 backward | ReduceScatter | GB-scale / N_ranks | Ring (pairwise exchange) |

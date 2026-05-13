@@ -3,7 +3,7 @@
 The previous chapters established what collectives do ([Foundations](00_foundations)),
 how oneCCL implements them ([Overview](01_overview)), and why ring construction matters
 on NUMA hardware ([Topology](02_topology)). This chapter explains the physical hardware
-limits that govern all of those choices on CRI — specifically, *why* certain algorithm
+limits that govern all of those choices on BMG/CRI — specifically, *why* certain algorithm
 shortcuts that work on NVIDIA hardware do not work here.
 
 **What you need to understand for the Hands-On notebooks:** The two constraints at the
@@ -11,14 +11,14 @@ top of this chapter (no intra-node GPU fabric, no GPU-initiated network I/O). Ev
 past the `topo` algorithm section is a deep dive into HMEM internals and scaling analysis
 that you can return to when diagnosing production performance issues.
 
-This chapter covers CRI (Crescent Island, Xe3) with context from PVC (Ponte Vecchio,
-Xe-HPC). Both generations share the same two fundamental limits.
+This chapter covers BMG/CRI (Battlemage / Crescent Island, Xe3) with context from PVC
+(Ponte Vecchio, Xe-HPC). Both generations share the same two fundamental limits.
 
 ---
 
 ## The Two Constraints that Matter
 
-| Constraint | PVC (Xe-HPC, 2022) | CRI (Xe3, 2026) |
+| Constraint | PVC (Xe-HPC, 2022) | BMG/CRI (Xe3, 2026) |
 |---|---|---|
 | Intra-node GPU fabric | Xe Link (high-BW coherent) | **None, PCIe only** |
 | GPU-initiated network I/O | No | No |
@@ -32,7 +32,7 @@ then the CPU posts the send to the NIC. On receipt, the NIC writes into a CPU
 buffer, and the CPU copies to GPU memory. Every inter-node collective goes
 through this two-copy path by default.
 
-Neither PVC nor CRI can bypass this: the GPU cannot autonomously post network
+Neither PVC nor BMG/CRI can bypass this: the GPU cannot autonomously post network
 operations. The host CPU always orchestrates every send/recv to the NIC. In
 standard deployments, all inter-node (scaleout) traffic is copied through host
 memory. This is the primary scalability limitation of Intel Xe GPUs compared to
@@ -41,18 +41,18 @@ NVIDIA GPUDirect RDMA, which has been production-grade for over a decade.
 The term "GPU Direct" is often used loosely. There are actually four separate
 capabilities, each with different hardware requirements:
 
-| Capability | NVIDIA | PVC (Xe-HPC) | CRI (Xe3) |
+| Capability | NVIDIA | PVC (Xe-HPC) | BMG/CRI (Xe3) |
 |---|---|---|---|
 | **GPU-initiated network I/O** | Yes (GPUDirect Async) | No | No |
 | **NIC-to-GPU DMA (host-orchestrated)** | Yes (GPUDirect RDMA) | Experimental (HMEM) | Experimental (HMEM) |
 | **GPU-to-GPU P2P DMA** | Yes (NVLink / PCIe) | Yes (Xe Link + PCIe) | PCIe only |
 | **GPU RDMA offload** | Yes | Xe Link only (`offload` mode) | No (no fabric) |
 
-On CRI, the GPU has no path to initiate network I/O:
+On BMG/CRI, the GPU has no path to initiate network I/O:
 
 ```
   ┌──────────────────────┐
-  │    CRI GPU (Xe3)     │
+  │    BMG/CRI GPU (Xe3)     │
   ├──────────────────────┤
   │  Compute (EUs)       │
   │  Copy Engines        │──── Level Zero IPC (GPU driver P2P over PCIe)
@@ -74,7 +74,7 @@ On CRI, the GPU has no path to initiate network I/O:
 
 ---
 
-## CRI vs PVC: Absence of Intra-Node Fabric
+## BMG/CRI vs PVC: Absence of Intra-Node Fabric
 
 A collective running across multiple nodes has two communication phases:
 **scale-up** (within a node, GPU-to-GPU) and **scaleout** (between nodes,
@@ -83,23 +83,23 @@ can exchange partial results. The scaleout phase determines how fast those
 results move across the network.
 
 PVC systems (e.g., Aurora, the DOE supercomputer at Argonne) used Xe Link to
-form a high-bandwidth mesh between GPUs within a node. CRI has no equivalent:
+form a high-bandwidth mesh between GPUs within a node. BMG/CRI has no equivalent:
 
 ```
 PVC with Xe Link (Aurora-class):
   GPU0 ←──Xe Link──→ GPU1    (direct, high-BW, coherent)
   Scale-up: ~100+ GB/s per link, no host involvement
 
-CRI without fabric:
+BMG/CRI without fabric:
   GPU0 ←──PCIe──→ CPU ←──PCIe──→ GPU1    (host-mediated)
   Scale-up: limited by PCIe BW (~32 GB/s Gen5 x16), crosses CPU
 ```
 
-On CRI, even the **scale-up phase** (intra-node) is constrained:
+On BMG/CRI, even the **scale-up phase** (intra-node) is constrained:
 - No direct GPU-to-GPU path exists without going through PCIe
 - Level Zero IPC handles enable P2P DMA over PCIe, but bandwidth is limited
 - Cross-socket GPU pairs traverse UPI, adding latency and contention
-- NUMA pinning is the single biggest performance lever on CRI for this reason
+- NUMA pinning is the single biggest performance lever on BMG/CRI for this reason
 
 ---
 
@@ -107,13 +107,13 @@ On CRI, even the **scale-up phase** (intra-node) is constrained:
 
 The `topo` algorithm is oneCCL's default for GPU buffers. It exploits the two-level
 topology (intra-node fast, inter-node slower) by splitting every collective into phases.
-On CRI, Level Zero IPC handles are the mechanism for intra-node P2P: each GPU
+On BMG/CRI, Level Zero IPC handles are the mechanism for intra-node P2P: each GPU
 exports a memory handle via the Level Zero driver, and a peer GPU imports it to
 do a direct DMA read/write over PCIe without going through the host.
 
 ```
 Scale-up phase (intra-node, same server):
-  GPU ←→ GPU via Level Zero IPC handles (PCIe P2P DMA on CRI)
+  GPU ←→ GPU via Level Zero IPC handles (PCIe P2P DMA on BMG/CRI)
   Uses copy engines; no CPU involvement when P2P access works
 
 Scaleout phase (inter-node, different servers):
@@ -157,7 +157,7 @@ to host memory and run a CPU-side algorithm, losing even the PCIe P2P scale-up p
 
 ## Scaleout Limitation: Host Staging Is the Default
 
-Both PVC and CRI **always host-stage inter-node traffic by default**. This is the
+Both PVC and BMG/CRI **always host-stage inter-node traffic by default**. This is the
 scalability wall in production.
 
 OFI (OpenFabrics Interfaces) is the network transport that oneCCL uses for
@@ -244,22 +244,22 @@ Scaleout Data Path Decision (for GPU buffers, inter-node):
 
 ## Copy Engines and Compute Overlap
 
-CRI has dedicated **copy engines** separate from the compute units (EUs —
+BMG/CRI has dedicated **copy engines** separate from the compute units (EUs —
 execution units, the shader cores that run GEMM and attention kernels):
 
 | Engine | What It Does | When Used |
 |---|---|---|
 | Main copy engine | General DMA: GPU-host, GPU-GPU (P2P over PCIe) | Default for all transfers |
-| Link copy engine | Dedicated to P2P over fabric links | Only with Xe Link (not on CRI) |
+| Link copy engine | Dedicated to P2P over fabric links | Only with Xe Link (not on BMG/CRI) |
 | Compute EUs | GEMM, attention, etc. | Not used for communication |
 
-On CRI (no Xe Link), only the main copy engine is available for P2P. The link
+On BMG/CRI (no Xe Link), only the main copy engine is available for P2P. The link
 copy engine has no fabric to drive.
 
 Relevant variables:
 
 ```bash
-# Which copy engine to use (CRI: only 'main' is useful)
+# Which copy engine to use (BMG/CRI: only 'main' is useful)
 export CCL_ZE_COPY_ENGINE=main
 
 # Monolithic pipeline kernel: fuses reduce-scatter into a single kernel submission
@@ -310,7 +310,7 @@ oneCCL's topology manager probes P2P capabilities at init time:
 ```
 check_p2p_access():
   For each GPU pair, test if Level Zero IPC memory handles work.
-  On CRI: P2P works within a node via PCIe (no fabric).
+  On BMG/CRI: P2P works within a node via PCIe (no fabric).
   Cross-node: no P2P, must use host staging.
 
 check_p2p_atomics():
@@ -322,7 +322,7 @@ check_p2p_atomics():
 The result is a P2P connectivity matrix like:
 
 ```
-P2P Connectivity Matrix (CRI 4-GPU node, 2 sockets):
+P2P Connectivity Matrix (BMG/CRI 4-GPU node, 2 sockets):
 
          GPU0   GPU1   GPU2   GPU3
 GPU0      -     PCIe   UPI    UPI     Socket 0: GPU0, GPU1
@@ -388,7 +388,7 @@ With HMEM enabled:
 This subsection is for readers who want to understand what happens at the
 libfabric and kernel level. It's not required for deployment; skip to
 [No Hardware-Specific Gating](#no-hardware-specific-gating) if you just want
-to know whether CRI supports HMEM.
+to know whether BMG/CRI supports HMEM.
 
 The mechanism in oneCCL (from `src/atl/ofi/atl_ofi.cpp`):
 
@@ -441,7 +441,7 @@ abstracted behind libfabric's `FI_HMEM` API.
 ### No Hardware-Specific Gating
 
 HMEM has **no device-family restrictions** in oneCCL. It is purely a
-transport-layer feature that works on any Intel GPU (PVC, ARC, CRI/Xe3)
+transport-layer feature that works on any Intel GPU (PVC, ARC, BMG/CRI/Xe3)
 if the following conditions are met:
 
 **Requirements:**
@@ -454,14 +454,14 @@ if the following conditions are met:
 - Intel GPU driver with dmabuf export support
 - RDMA-capable NIC with verbs provider supporting `FI_HMEM_ZE`
 
-CRI (device ID `0x6740`, family8) is not blocked from any of these paths.
+BMG/CRI (device ID `0x6740`, family8) is not blocked from any of these paths.
 
 ### All GPU Direct Mechanisms in oneCCL
 
 oneCCL provides five mechanisms for avoiding host staging. **None are enabled by
 default.** All require explicit opt-in and have specific transport or stack requirements:
 
-| Mechanism | Env Var | Transport | Default | CRI Compatible |
+| Mechanism | Env Var | Transport | Default | BMG/CRI Compatible |
 |---|---|---|---|---|
 | **OFI HMEM** | `CCL_ATL_HMEM=1` | OFI (verbs/cxi/psm3) | Off | Yes |
 | **Direct GPU RDMA** | `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` | MPI only | Off | Yes (not in blocklist) |
@@ -469,10 +469,10 @@ default.** All require explicit opt-in and have specific transport or stack requ
 | **pt2pt offload** | `CCL_SEND=offload` / `CCL_RECV=offload` | OFI (PSM3_GPUDIRECT) or MPI | Off | Requires PSM3 |
 | **MPI HMEM** | `CCL_ATL_HMEM=1` + `CCL_ATL_TRANSPORT=mpi` | MPI (sets I_MPI_OFFLOAD=2) | Off | Yes |
 
-**OFI HMEM** is the primary mechanism for CRI with OFI transport (the recommended
+**OFI HMEM** is the primary mechanism for BMG/CRI with OFI transport (the recommended
 transport for inference). The SYCL-based mechanisms (Direct GPU RDMA, Pipeline GPU RDMA)
 are alternatives that work through MPI transport only and are gated by
-`should_disable_rdma()`. CRI falls to the `default` case which does **not** disable RDMA.
+`should_disable_rdma()`. BMG/CRI falls to the `default` case which does **not** disable RDMA.
 
 Note: `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` is explicitly disabled when `CCL_ATL_TRANSPORT=ofi`
 (the recommended transport). It only works via MPI transport with `I_MPI_OFFLOAD` set.
@@ -522,7 +522,7 @@ instead of nvidia-peermem as the kernel interface.
 
 **Comparison with NVIDIA GPUDirect RDMA:**
 
-| Aspect               | NVIDIA GPUDirect RDMA       | Intel HMEM (PVC/CRI)         |
+| Aspect               | NVIDIA GPUDirect RDMA       | Intel HMEM (PVC/BMG/CRI)         |
 |----------------------|-----------------------------|------------------------------|
 | Kernel interface     | nvidia-peermem module       | dmabuf (standard Linux)      |
 | Provider API         | `FI_HMEM_CUDA`              | `FI_HMEM_ZE`                 |
@@ -535,9 +535,9 @@ The last row is the remaining gap: on Intel Xe, the GPU kernel cannot autonomous
 post RDMA operations. The host CPU must call `fi_tsendmsg`/`fi_trecvmsg`. But the
 **data path** is GPU to NIC to network to NIC to GPU with zero host memory copies.
 
-**Applies to both PVC and CRI.** Neither is in `should_disable_rdma()`. Only certain
+**Applies to both PVC and BMG/CRI.** Neither is in `should_disable_rdma()`. Only certain
 ARC B-series desktop cards (0xE20B, 0xE20C, 0xE20D, 0xE212, 0xE220, 0xE221, 0xE223)
-are blocked. PVC (family2, device mask 0xBD0) and CRI (family8, device 0x6740) both
+are blocked. PVC (family2, device mask 0xBD0) and BMG/CRI (family8, device 0x6740) both
 fall to the `default` case which does **not** disable RDMA.
 
 ### Production Readiness
@@ -549,7 +549,7 @@ HMEM is **experimental** and not enabled by default because:
 - Failure mode is silent hang (NIC cannot access GPU memory, waits indefinitely)
 
 When it works, it eliminates one PCIe round-trip per inter-node message (2-5 us
-saved per collective). For CRI's 160 allreduces per token, this could save 320-800 us
+saved per collective). For BMG/CRI's 160 allreduces per token, this could save 320-800 us
 of TPOT if validated on the target stack.
 
 ---
@@ -608,7 +608,7 @@ overlap helps. Double-buffering with `async_op=True` is preferred.
 ### Aurora Allreduce Latency (PVC, Xe Link, Slingshot-11)
 
 Aurora is the DOE supercomputer at Argonne National Laboratory. It uses PVC GPU
-tiles (predecessor to CRI), Xe Link for intra-node fabric, and HPE Slingshot-11
+tiles (predecessor to BMG/CRI), Xe Link for intra-node fabric, and HPE Slingshot-11
 for the network. These numbers represent the best-case Intel GPU collective
 performance with full hardware support.
 
@@ -650,10 +650,10 @@ From Vooturi et al., "Scalable Pretraining of Large MoE Language Models on Auror
 - **90% scaling efficiency** at 12,288 tiles
 - Communication overhead managed through expert-parallel sharding
 
-### How These Numbers Apply to CRI
+### How These Numbers Apply to BMG/CRI
 
 ```
-Aurora Node (PVC):                    CRI Node (Xe3):
+Aurora Node (PVC):                    BMG/CRI Node (Xe3):
 
   ┌──────────────────────────────┐    ┌─────────────────────────────────┐
   │  Tile0 ══Xe Link══ Tile1    │    │  GPU0 ──PCIe── CPU ──PCIe── GPU1│
@@ -673,20 +673,20 @@ Aurora Node (PVC):                    CRI Node (Xe3):
     8 NICs stripe bandwidth             fewer NICs, lower aggregate BW
 ```
 
-CRI nodes are more constrained than Aurora:
+BMG/CRI nodes are more constrained than Aurora:
 - No Xe Link (Aurora has 28 GB/s per Xe Link between GPU stacks)
 - Fewer NICs per node (Aurora has 8x Slingshot-11)
 - PCIe-only intra-node path
 
 Expect **higher per-collective latency** and **lower bandwidth** than the Aurora numbers
 above. The Aurora benchmarks are an upper bound on Intel GPU collective communication
-performance with fabric. CRI without fabric will sit closer to the small-message
+performance with fabric. BMG/CRI without fabric will sit closer to the small-message
 latency floor (15-25 us per collective) and will not scale bandwidth as well with
 message size.
 
 ---
 
-## Practical Implications for CRI Deployment
+## Practical Implications for BMG/CRI Deployment
 
 TP=4 (tensor parallelism across 4 GPUs) is a common inference configuration: one
 model layer is sharded across 4 GPUs, each doing a fraction of the GEMM, with an
@@ -714,7 +714,7 @@ Latency Breakdown: One Allreduce (TP=4, 2 nodes, 16 KB message):
   x 160 allreduces per token (80 layers x 2 allreduces each) = 1.8-3.5 ms TPOT budget
 ```
 
-Given CRI's constraints (no fabric, no GPU-initiated network I/O):
+Given BMG/CRI's constraints (no fabric, no GPU-initiated network I/O):
 
 1. **Never set `CCL_ALLREDUCE=ring` (or any non-topo value) for GPU inference.**
    This forces GPU→host→CPU-algorithm→host→GPU for every collective. Use
@@ -745,7 +745,7 @@ See [Perf Tuning](perf_tuning) for the full variable reference and launch templa
 
 ## Future Hardware: UALink, GPU RDMA
 
-| Constraint | CRI (Xe3) | Future (UALink-equipped) |
+| Constraint | BMG/CRI (Xe3) | Future (UALink-equipped) |
 |---|---|---|
 | GPU-initiated network I/O | No | Expected (HW RDMA engine) |
 | NIC-to-GPU DMA (zero-copy) | Experimental (dmabuf) | Native |
@@ -756,7 +756,7 @@ See [Perf Tuning](perf_tuning) for the full variable reference and launch templa
 | Host staging required? | **Yes** (default); experimental bypass via HMEM | No (with GPU-initiated RDMA) |
 
 ```
-CRI (current):                          Future (UALink):
+BMG/CRI (current):                          Future (UALink):
 
   ┌─────────────────────────┐          ┌───────────────────────────────────┐
   │ GPU0  GPU1  GPU2  GPU3  │          │  GPU0 ═══ GPU1 ═══ GPU2 ═══ GPU3  │
@@ -803,17 +803,17 @@ When GPU-initiated network I/O and UALink arrive:
 
 ---
 
-## Appendix: CRI Device Recognition in oneCCL Source
+## Appendix: BMG/CRI Device Recognition in oneCCL Source
 
 This section is for readers debugging oneCCL behavior or checking whether a
 specific GPU family gets a specific code path.
 
-oneCCL recognizes CRI as device ID `0x6740` (device family `family8`). It is
+oneCCL recognizes BMG/CRI as device ID `0x6740` (device family `family8`). It is
 classified as an "arc card" and uses SYCL kernel-based algorithms with
-PCIe-oriented code paths. CRI is **not** in the `should_disable_rdma()`
+PCIe-oriented code paths. BMG/CRI is **not** in the `should_disable_rdma()`
 blocklist — that function only blocks certain ARC B-series desktop cards
 (0xE20B-0xE223) which had driver-level issues with GPU RDMA. All GPU RDMA
-mechanisms (HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available for CRI.
+mechanisms (HMEM, Direct GPU RDMA, Pipeline GPU RDMA) are available for BMG/CRI.
 The AOT compilation targets include `xe3` alongside `pvc` and `xe2`.
 
 **Next:** [When to Use Which Collective](03_when_to_use) — the decision guide for

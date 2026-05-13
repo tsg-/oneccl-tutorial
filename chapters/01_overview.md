@@ -118,7 +118,7 @@ oneCCL supports the full set of MPI-style collectives:
 **Point-to-collective:**
 - `broadcast` -- one rank sends to all
 - `reduce` -- all ranks contribute, result on one rank
-- `scatter` / `gather` -- one-to-many / many-to-one (P0 in CRI roadmap)
+- `scatter` / `gather` -- one-to-many / many-to-one (P0 in BMG/CRI roadmap)
 
 ---
 
@@ -126,7 +126,7 @@ oneCCL supports the full set of MPI-style collectives:
 
 ### Inference (Tensor Parallelism)
 
-For a TP=4 decode cluster on CRI hardware:
+For a TP=4 decode cluster on BMG/CRI hardware:
 
 ```
  Rank 0    Rank 1    Rank 2    Rank 3
@@ -134,7 +134,7 @@ For a TP=4 decode cluster on CRI hardware:
    │         │         │         │
    └─────────┴──CCL────┴─────────┘
            NUMA / PCIe fabric
-           (no XeLink on CRI)
+           (no XeLink on BMG/CRI)
 ```
 
 Each GPU holds 1/4 of the model weight. After every linear layer, an `allreduce` is needed
@@ -220,7 +220,7 @@ NCCL is designed around a hardware assumption: high-bandwidth NVLink meshes with
 implemented as CUDA kernels that directly read/write peer GPU memory — the "kernel-fused"
 approach means the collective operation runs entirely on the GPU with no host involvement.
 
-oneCCL cannot assume GPU fabric (CRI has none) and cannot fuse collectives into GPU kernels
+oneCCL cannot assume GPU fabric (BMG/CRI has none) and cannot fuse collectives into GPU kernels
 (Xe compute EUs cannot initiate network I/O). Instead, oneCCL's `topo` algorithm:
 - Uses **copy engines** for intra-node P2P (Level Zero IPC handles)
 - Uses **host-staged OFI transport** for inter-node communication

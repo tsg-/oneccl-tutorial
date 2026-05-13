@@ -183,9 +183,9 @@ optional.
 
 ---
 
-## CRI-Specific Considerations
+## BMG/CRI-Specific Considerations
 
-On CRI nodes (NUMA-only, no XeLink), both oneCCL and NIXL are PCIe-constrained.
+On BMG/CRI nodes (NUMA-only, no XeLink), both oneCCL and NIXL are PCIe-constrained.
 This makes the separation even more important — you cannot afford to have KV bulk
 transfers competing with TP allreduce synchronization on the same PCIe uplink.
 

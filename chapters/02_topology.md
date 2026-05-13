@@ -1,8 +1,8 @@
 # Topology and Algorithm Selection
 
-## CRI Hardware Reality: NUMA-Only
+## BMG/CRI Hardware Reality: NUMA-Only
 
-CRI inference nodes use **NUMA-only intra-node topology** -- no UALink, no XeLink fabric.
+BMG/CRI inference nodes use **NUMA-only intra-node topology** -- no UALink, no XeLink fabric.
 This is the single most important constraint driving algorithm selection.
 
 ```
@@ -45,7 +45,7 @@ accesses, and PCIe forwarding all compete for the same bandwidth. Under load fro
 multiple GPU pairs communicating simultaneously, effective per-pair bandwidth can
 drop to 10-15 GB/s.
 
-### Why P2P DMA Works (or Fails) on CRI
+### Why P2P DMA Works (or Fails) on BMG/CRI
 
 Level Zero IPC handles enable P2P DMA over PCIe, but several hardware/software
 conditions must be met:
@@ -99,7 +99,7 @@ Ring Allreduce with topology-aware construction is the correct algorithm here.
 
 The examples below use **two different node configurations** to illustrate the principle
 clearly. The opening diagram of this chapter used 4 GPUs (2 per socket, matching the
-CRI P2P matrix). The ring example below uses 8 GPUs (4 per socket) because the
+BMG/CRI P2P matrix). The ring example below uses 8 GPUs (4 per socket) because the
 interleaving failure mode is more visible with more ranks; the principle is identical
 for 4 GPUs.
 
@@ -147,7 +147,7 @@ I_MPI_PIN_DOMAIN=socket mpirun -n 4 -ppn 4 python train.py
 CCL_LOG_LEVEL=info python script.py 2>&1 | grep -i "ring order"
 ```
 
-## Algorithm Decision Tree for CRI Inference
+## Algorithm Decision Tree for BMG/CRI Inference
 
 ```
 What collective do you need?
@@ -155,7 +155,7 @@ What collective do you need?
 ├── Allreduce (TP layer sync)
 │     ├── msg < 1MB, TP <= 8  →  Ring              ✓ Done
 │     ├── msg > 1MB           →  Ring (pipelined)  ✓ Done
-│     └── One-Shot            →  P1 (requires GPU fabric / UALink, not available on CRI)
+│     └── One-Shot            →  P1 (requires GPU fabric / UALink, not available on BMG/CRI)
 │
 ├── Allgather (sequence parallelism)
 │     └── any size            →  Ring              ✓ Done
@@ -245,6 +245,6 @@ node   0   1
   1:  21  10
 ```
 
-**Next:** [GPU Hardware Constraints](pvc_hardware_constraints) — what CRI cannot do
+**Next:** [GPU Hardware Constraints](pvc_hardware_constraints) — what BMG/CRI cannot do
 (no intra-node GPU fabric, no GPU-initiated network I/O) and how that shapes every
 algorithm choice in the notebooks.

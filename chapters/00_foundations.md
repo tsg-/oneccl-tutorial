@@ -403,7 +403,7 @@ exploits physical locality in the switch fabric, NUMA topology, and cache cohere
 domains. Recursive doubling's random-distance pattern saturates different links at
 different rates.
 
-**For NUMA-only CRI hardware**, this effect is even more pronounced: nearest-neighbor
+**For NUMA-only BMG/CRI hardware**, this effect is even more pronounced: nearest-neighbor
 means intra-socket hops (fast PCIe), while recursive doubling forces cross-socket UPI
 transfers on many steps.
 
@@ -657,7 +657,7 @@ os.environ["CCL_ALLREDUCE_SCALEOUT"] = "rabenseifner"
 os.environ["CCL_ALLREDUCE"] = "ring"  # OK for CPU buffers only
 ```
 
-For TP decode on CRI (NUMA-only, batch=1):
+For TP decode on BMG/CRI (NUMA-only, batch=1):
 - Message size ≈ 8192 × 2 bytes = **16 KB** → below all crossover thresholds
 - Recursive doubling would be the theoretically correct choice (fewer steps for small msg)
 - **But** Ring is still recommended for scaleout: the topology-aware nearest-neighbor ring

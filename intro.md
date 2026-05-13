@@ -39,7 +39,7 @@ decision tree and ZeRO pattern guide.
 No prior knowledge of distributed training, MPI, or collective communication is assumed.
 The [Foundations chapter](chapters/00_foundations) covers all necessary background.
 
-## Quick Reference: CRI Collective Priorities
+## Quick Reference: BMG/CRI Collective Priorities
 
 **Inference:**
 
@@ -61,7 +61,7 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 | Broadcast | Scatter+Allgather | Done | Checkpoint/weight broadcast at startup |
 | P2P Send/Recv | (not a collective) | Done | Pipeline parallelism stage-to-stage activation handoff |
 
-**Status:** Done = implemented and available on CRI today. P0 = highest priority,
+**Status:** Done = implemented and available on BMG/CRI today. P0 = highest priority,
 actively in development. P1 = planned, pending hardware support (e.g., GPU fabric).
 
 ## Running the Notebooks
@@ -87,7 +87,7 @@ workload as a subprocess, so you can run it from a single-rank kernel and still 
 ┌─────────────────────────────────────────────────────────┐
 │                   Inference Workload                    │
 ├──────────────────────┬──────────────────────────────────┤
-│     oneCCL (CRI)     │           NIXL / UCX             │
+│     oneCCL (BMG/CRI)     │           NIXL / UCX             │
 │                      │                                  │
 │  TP Allreduce        │  KV cache P→D transfer           │
 │  MoE Alltoall        │  Disaggregated routing           │
