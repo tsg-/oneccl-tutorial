@@ -28,3 +28,5 @@ parts:
     chapters:
       - file: chapters/perf_tuning
       - file: chapters/nixl_boundary
+      - file: chapters/host_staging_scaling
+        title: "Host Staging: Scaling Limits on PVC"
