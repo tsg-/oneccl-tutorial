@@ -1,7 +1,8 @@
 # When to Use Which Collective
 
-This chapter is a decision guide. It maps inference workload patterns to collective choices,
-explains the "why" behind each recommendation, and flags the gaps on CRI hardware today.
+This chapter is a decision guide for both inference and training. It maps workload patterns
+to collective choices, explains the "why" behind each recommendation, and flags the gaps on
+CRI hardware today.
 
 If you have not read [Foundations](00_foundations) yet, read §3 (what the collectives do) and
 §4 (algorithms) first.
@@ -218,3 +219,186 @@ correctness test before deploying.
 | MoE routing (skewed) | Alltoallv | varies | topo (scale-up) + scatter (scaleout) |
 | Control sync (EOS) | Allreduce MAX | < 1 KB | Any |
 | KV cache P→D | — | GB-scale | **NIXL** (not oneCCL) |
+
+---
+
+## Training Workloads
+
+Training uses the same collectives as inference but in different configurations. The critical
+difference is **message size regime**: inference decode is latency-bound (16 KB, 160×/token),
+while training gradient sync is bandwidth-bound (GB-scale, 1×/step). The algorithm families
+are the same — ring for large messages, recursive doubling for small — but the right operating
+point shifts entirely to the ring side.
+
+### Training Collective Decision Tree
+
+```
+What are you synchronizing?
+│
+├── Data-parallel gradient aggregation (DP, DDP, ZeRO-0/1)
+│   └── → Allreduce (SUM)
+│       Every GPU computed gradients on its batch shard. Sum to get full-dataset gradient.
+│       Size: (model params) × bytes/param
+│       7B model (BF16): 14 GB total — partitioned by layer, streamed with backward pass
+│       Algorithm: Ring (always bandwidth-bound)
+│       ZeRO-1 note: gradient communication is unchanged (still Allreduce); ZeRO-1 only
+│             shards optimizer state, which is local CPU work after the Allreduce completes
+│
+├── ZeRO-2 gradient partitioning (optimizer sharding)
+│   └── → ReduceScatter (SUM)
+│       Like allreduce but each rank keeps only 1/N of the gradient (its own shard).
+│       Each rank only updates its own optimizer state shard — no need for full gradient on all ranks.
+│       Size per rank: model_params/N × 2 bytes
+│       Algorithm: Ring reduce-scatter (pairwise exchange for large messages)
+│
+├── ZeRO-3 parameter reconstruction (parameter sharding)
+│   ├── Before forward pass: → Allgather
+│   │   Each rank holds 1/N of parameters. Reconstruct full layer before the matmul.
+│   │   Discard the gathered copy immediately after the layer to free memory.
+│   │   Size per allgather: one layer's parameters (varies: 100 MB for 70B attention)
+│   │   Algorithm: Ring allgather
+│   └── After backward pass: → ReduceScatter
+│       Reduce gradients and scatter — same as ZeRO-2.
+│
+├── Pipeline parallelism activation handoff (PP)
+│   └── → NOT a collective. Use point-to-point send/recv.
+│       Stage i sends its output activation to stage i+1. Stage i+1 sends gradients back.
+│       This is P2P: one sender, one receiver. Forcing it into allgather wastes (N-1)/N BW.
+│       In PyTorch: dist.send(tensor, dst=next_rank) / dist.recv(tensor, src=prev_rank)
+│       Async variants: dist.isend() / dist.irecv() with req.wait() for overlap
+│
+├── Tensor parallel gradient sync (TP, same as inference)
+│   └── → Allreduce (SUM) — same as inference TP layer sync
+│       During training the backward pass needs the same allreduce as the forward pass.
+│       Message sizes identical to forward pass for the same layer.
+│
+├── Expert parallel gradient sync (EP, MoE training)
+│   └── → Alltoallv (forward + backward)
+│       Forward: route tokens to expert GPUs (same as inference MoE dispatch)
+│       Backward: route gradients back — same alltoallv with transposed send/recv counts
+│       Plus a separate ReduceScatter on each expert's gradients across DP dimension
+│
+├── Model weight broadcast at startup / checkpoint restore
+│   └── → Broadcast
+│       Rank 0 loads checkpoint, broadcasts to all other ranks.
+│       Only at startup — never in training hot path.
+│       Size: full model (GB-scale). Algorithm: Van de Geijn (scatter+allgather ring)
+│
+└── Gradient norm computation (for gradient clipping)
+    └── → Allreduce (SUM of squared norms, then local sqrt)
+        Each rank computes local_norm² = sum(grad²). Allreduce sums across ranks.
+        Then each rank does sqrt(total) locally and clips.
+        Size: scalar (8 bytes). Any algorithm. Latency dominates.
+```
+
+### ZeRO Stage Comparison
+
+Understanding ZeRO is understanding which collectives run when:
+
+```
+ZeRO Stage 0 (no sharding, baseline DDP):
+  Forward:   no collective
+  Backward:  Allreduce (gradients, full model, every step)
+  Per-rank memory: full model + full gradients + full optimizer state
+
+ZeRO Stage 1 (optimizer state sharding):
+  Forward:   no collective
+  Backward:  Allreduce (gradients, full model) — same as stage 0
+  Optimizer: each rank updates its shard only
+  Per-rank memory: full model + full gradients + 1/N optimizer state
+  Collective pattern change: none in the critical backward path
+
+ZeRO Stage 2 (gradient + optimizer state sharding):
+  Forward:   no collective
+  Backward:  ReduceScatter (replaces Allreduce — each rank reduces its shard only)
+  Optimizer: each rank updates its shard only
+  Per-rank memory: full model + 1/N gradients + 1/N optimizer state
+  Collective change: backward becomes ReduceScatter (not Allreduce)
+  Savings: gradient buffer drops from M to M/N
+
+ZeRO Stage 3 (parameter + gradient + optimizer sharding):
+  Forward:   Allgather (per layer, reconstruct + discard after each layer)
+  Backward:  ReduceScatter (per layer, reduce + discard after each layer)
+  Optimizer: each rank updates its shard only
+  Per-rank memory: 1/N model + 1/N gradients + 1/N optimizer state
+  Collective change: adds Allgather on critical forward path
+  Cost: 2× allreduce bandwidth equivalent (ReduceScatter + Allgather), but now memory-
+        optimal. For large models that don't fit otherwise, this is the right trade.
+```
+
+### Training Message Sizes vs Inference: The Algorithm Crossover
+
+The same message size thresholds from §7 of Foundations apply, but training lands
+on the opposite side of all of them:
+
+| Workload | Example Message | Regime | Dominant Algorithm |
+|---|---|---|---|
+| TP decode (inference) | hidden=8192, BF16, batch=1 | **16 KB** — latency-bound | Recursive doubling (scaleout fallback) |
+| TP prefill (inference) | hidden=8192, BF16, batch=32, seq=128 | **64 MB** — bandwidth-bound | Ring |
+| ZeRO-2 ReduceScatter (training) | 7B model / N_ranks | **GB-scale** — deep BW-bound | Ring |
+| ZeRO-3 Allgather (training) | one layer / N_ranks | **100 MB–1 GB** — BW-bound | Ring |
+| DP Allreduce (training, DDP) | 7B model BF16 | **14 GB total** (streamed per layer) | Ring |
+
+**For training on CRI:** ring is always correct. The 512 KB threshold from Foundations §7
+is irrelevant — training collective messages are 3-4 orders of magnitude larger. The
+important configuration is ensuring `CCL_ALLREDUCE_SCALEOUT=ring` and that NUMA pinning
+is correct so intra-node ring steps stay on-socket.
+
+### Pipeline Parallelism: Not a Collective
+
+Pipeline parallelism is a common source of confusion. **It does not use collectives.**
+
+```
+PP=4, forward pass, microbatch flow:
+
+  Stage 0 (Rank 0)  →  Stage 1 (Rank 1)  →  Stage 2 (Rank 2)  →  Stage 3 (Rank 3)
+  Layers 0-19           Layers 20-39          Layers 40-59          Layers 60-79
+
+  Send: dist.isend(activation, dst=1)    ← sends to next stage only
+  Recv: dist.irecv(activation, src=0)    ← receives from prev stage only
+
+  Backward:
+  Stage 3 → Stage 2 → Stage 1 → Stage 0  (gradients flow backward)
+```
+
+`dist.isend`/`dist.irecv` are point-to-point operations — they involve exactly two ranks.
+A collective like Allgather would broadcast to all N stages, which is wrong and wastes
+(N-1)/N of the bandwidth. oneCCL supports P2P via `dist.send`/`dist.recv` backed by the
+CCL transport layer; these are fine to use alongside collectives in the same process group.
+
+### Training Anti-Patterns
+
+| Situation | Wrong | Right |
+|---|---|---|
+| Gradient sync across DP ranks | Allgather (don't need full gradient on all ranks) | Allreduce or ReduceScatter (ZeRO-2+) |
+| PP stage activation handoff | Broadcast or Allgather | `dist.isend`/`dist.irecv` (P2P) |
+| ZeRO-3 forward pass | Broadcast from rank 0 | Allgather (every rank holds 1/N and reconstructs together) |
+| Layer-wise gradient accumulation (gradient checkpointing) | One allreduce per micro-step | Accumulate locally, one allreduce per global step |
+| Loading a checkpoint during training | Broadcast (blocks all ranks for GB-scale load) | Load on one rank from filesystem, then Broadcast; or use NIXL for large shards |
+
+### Training and NIXL
+
+Training **does not use NIXL** in the standard case. NIXL is specific to disaggregated
+inference architectures (prefill→decode KV transfer). During training, all communication
+is collective and stays within oneCCL. The oneCCL/NIXL boundary described in
+[The oneCCL/NIXL Boundary](nixl_boundary) does not exist in training deployments — the
+NIXL column is simply absent.
+
+The only training-adjacent case where NIXL could appear is model checkpoint streaming
+during long runs (loading/saving weight shards asynchronously while training continues),
+but that is application-level engineering, not collective communication.
+
+---
+
+## Quick Reference: Training Collective Cheat Sheet
+
+| Training Pattern | Collective | Size Regime | Algorithm (CRI) |
+|---|---|---|---|
+| DDP gradient sync | Allreduce | GB-scale (per-layer stream) | Ring |
+| ZeRO-2 backward | ReduceScatter | GB-scale / N_ranks | Ring (pairwise exchange) |
+| ZeRO-3 forward | Allgather (per layer) | ~100 MB–1 GB / N_ranks | Ring |
+| ZeRO-3 backward | ReduceScatter (per layer) | ~100 MB–1 GB / N_ranks | Ring |
+| MoE training dispatch | Alltoallv | varies (asymmetric) | topo (scale-up) + scatter (scaleout) |
+| Pipeline parallelism | P2P send/recv | activation size | dist.isend/irecv |
+| Grad norm (clipping) | Allreduce (SUM) | 8 bytes | Any |
+| Weight broadcast (startup) | Broadcast | Full model (GB) | Van de Geijn (scatter+allgather) |

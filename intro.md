@@ -7,7 +7,7 @@ routing, and disaggregated Prefill/Decode (PD) architectures.
 :::{note}
 This is an internal Intel AI Group / CCO Team resource. Hardware context throughout assumes
 **CRI nodes: NUMA-only topology, no UALink/XeLink fabric.** Algorithm selection guidance is
-calibrated accordingly.
+calibrated for both inference and distributed training workloads.
 :::
 
 ## Audience
@@ -20,11 +20,19 @@ in the rest of the tutorial assumes prior knowledge beyond that chapter.
 **If you know MPI/NCCL basics already:** you can start at
 [oneCCL Overview](chapters/01_overview) and use the Foundations chapter as a reference.
 
+**If you are a training engineer (distributed training, ZeRO, pipeline parallelism):** the
+Foundations and Topology chapters apply directly — the same algorithms run for training.
+The key difference is message size regime: training gradient allreduces and ZeRO communication
+are bandwidth-bound where inference decode is latency-bound. Jump to
+[When to Use Which Collective §Training](chapters/03_when_to_use) for the training-specific
+decision tree and ZeRO pattern guide.
+
 ## Scope
 
 - What collective communication is and why it exists (ranks, allreduce, ring algorithm)
 - Which algorithm families work on NUMA-only hardware and why
-- How oneCCL fits into the oneAPI stack and where it hands off to NIXL
+- Training collective patterns: DP gradient sync, ZeRO stages 1/2/3, pipeline parallelism P2P
+- How oneCCL fits into the oneAPI stack and where it hands off to NIXL (inference only)
 - How to initialize oneCCL, run core collectives, and measure performance
 - End-to-end TP decode loop with real oneCCL calls
 
@@ -39,6 +47,8 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 
 ## Quick Reference: CRI Collective Priorities
 
+**Inference:**
+
 | Collective | Primary Algorithm | Status | Inference Use Case |
 |---|---|---|---|
 | Allreduce | Ring | Done | TP layer boundary sync |
@@ -46,6 +56,16 @@ The [Foundations chapter](chapters/00_foundations) covers all necessary backgrou
 | Allgather | Ring | Done | Sequence parallelism |
 | Alltoall | topo (scale-up + scatter scaleout) | Done | MoE expert routing |
 | Scatter/Gather | Ring | P0 | KV cache distribution |
+
+**Training:**
+
+| Collective | Primary Algorithm | Status | Training Use Case |
+|---|---|---|---|
+| Allreduce | Ring (BW-optimal) | Done | DP gradient sync (large gradients, BW-bound) |
+| ReduceScatter | Ring | Done | ZeRO-2/3 gradient aggregation |
+| Allgather | Ring | Done | ZeRO-3 parameter reconstruction before forward pass |
+| Broadcast | Scatter+Allgather | Done | Checkpoint/weight broadcast at startup |
+| P2P Send/Recv | (not a collective) | Done | Pipeline parallelism stage-to-stage activation handoff |
 
 **Status:** Done = implemented and available on CRI today. P0 = highest priority,
 actively in development. P1 = planned, pending hardware support (e.g., GPU fabric).

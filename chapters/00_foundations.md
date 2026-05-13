@@ -43,12 +43,17 @@ Naive all-pairs (12 messages, every link carries full redundant copies):
   Each GPU receives 3 messages, does 3 additions. 12 transfers total, 3M bytes/GPU.
 
 Ring allreduce (8 messages, pipeline partial sums):
+
   Step 1 (reduce-scatter):
-    GPU0 → GPU1: v_0          GPU1 → GPU2: v_1          GPU2 → GPU3: v_2          GPU3 → GPU0: v_3
+    GPU0 → GPU1: v_0           GPU1 → GPU2: v_1          GPU2 → GPU3: v_2          GPU3 → GPU0: v_3
+
     GPU1 accumulates: v_0+v_1  GPU2: v_1+v_2  GPU3: v_2+v_3  GPU0: v_3+v_0
+
   Step 2 (reduce-scatter):
     GPU0 → GPU1: v_3+v_0      GPU1 → GPU2: v_0+v_1      GPU2 → GPU3: v_1+v_2      GPU3 → GPU0: v_2+v_3
+
     GPU1: v_0+v_1+v_2+v_3  GPU2: v_0+v_1+v_2+v_3  (one shard each has full sum)
+
   Steps 3-4 (allgather): distribute the completed shards.
 
   Each GPU sends/receives exactly M bytes total — same bandwidth, but each link carries
@@ -121,7 +126,8 @@ world_size = dist.get_world_size()       # p = total number of processes
 
 ## 3. Core Collective Operations
 
-There are four collectives that matter for inference. Everything else is a specialization.
+There are four collectives that matter for distributed ML — inference and training both use
+them, but for different reasons and at different message sizes.
 
 ### 3.1 Allreduce
 
@@ -143,6 +149,12 @@ After allreduce(op=SUM):
 
 **Inference use case:** TP layer boundary. After a row-parallel linear layer, each GPU holds
 a partial activation sum. Allreduce combines them so every GPU has the full activation.
+Message size: 16 KB for decode (batch=1, hidden=8192). Latency-bound regime.
+
+**Training use case:** Data-parallel gradient sync. Each GPU computed gradients on its own
+data shard; allreduce sums them so every GPU updates its weights identically.
+Message size: full model parameter count × 2 bytes. A 7B model = 14 GB of gradients total,
+partitioned by layer and overlapped with backward pass. Bandwidth-bound regime.
 
 ### 3.2 Allgather
 
@@ -164,6 +176,10 @@ After allgather:
 
 **Inference use case:** Sequence Parallelism. Each rank holds a shard of the KV cache.
 Before attention, all shards are gathered so every rank can attend over the full context.
+
+**Training use case (ZeRO-3):** Before the forward pass, each rank holds only 1/N of each
+layer's parameters. Allgather reconstructs the full layer on each rank before the matmul,
+then parameters are discarded immediately after use to keep per-rank memory at 1/N.
 
 ### 3.3 Alltoall (and Alltoallv)
 
@@ -189,6 +205,10 @@ each peer. This is required for MoE routing where token-to-expert assignment is 
 **Inference use case:** MoE expert dispatch — tokens routed to their selected expert GPU,
 then expert outputs routed back to their origin GPUs.
 
+**Training use case:** Same MoE routing applies during training. Expert-parallel training
+also uses Alltoall for gradient routing. Message characteristics are similar to inference
+but combined with larger batch sizes, making the bandwidth component more significant.
+
 ### 3.4 Reduce-Scatter
 
 **Like Allreduce but the result is split: rank i receives only the i-th chunk of the
@@ -210,6 +230,12 @@ After reduce_scatter(op=SUM):
 
 Allreduce = Reduce-Scatter followed by Allgather. If you only need one chunk of the result,
 stop after Reduce-Scatter — you avoid the Allgather's bandwidth cost.
+
+**Training use case (ZeRO-2/3):** Instead of allreduce (which replicates the full gradient
+on every rank), ZeRO uses reduce-scatter to assign each rank responsibility for a disjoint
+shard of the gradient. Each rank then updates only its shard. Combined with Allgather before
+the forward pass (ZeRO-3) or optimizer step (ZeRO-2), this reduces per-rank memory from O(N)
+to O(1) for gradients and optimizer state.
 
 ---
 

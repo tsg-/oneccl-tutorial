@@ -34,20 +34,20 @@ can run on any hardware with a UCX transport provider.
 ```
 ┌─────────────────────────────────────────────┐
 │              Application Layer              │
-│  (vLLM scheduler, TensorRT-LLM, custom)    │
+│   (vLLM scheduler, TensorRT-LLM, custom)    │
 ├─────────────────────────────────────────────┤
 │              NIXL Agent API                 │
-│  nixl_agent → register_memory()            │
-│            → get_xfer_descs()              │
-│            → initialize_xfer()             │
-│            → transfer()                    │
-│            → check_xfer_state()            │
+│   nixl_agent → register_memory()            │
+│             → get_xfer_descs()              │
+│             → initialize_xfer()             │
+│             → transfer()                    │
+│             → check_xfer_state()            │
 ├─────────────────────────────────────────────┤
 │              NIXL Backend                   │
-│  ┌───────────┬───────────┬───────────┐     │
-│  │    UCX    │   GDR     │  Storage  │     │
-│  │  (RDMA)  │ (GPUDirect)│  (NVMe)  │     │
-│  └───────────┴───────────┴───────────┘     │
+│  ┌───────────┬─────────────┬───────────┐    │
+│  │    UCX    │   GDR       │  Storage  │    │
+│  │  (RDMA)   │ (GPUDirect) │  (NVMe)   │    │
+│  └───────────┴─────────────┴───────────┘    │
 ├─────────────────────────────────────────────┤
 │     NIC / Fabric / Storage Hardware         │
 └─────────────────────────────────────────────┘
@@ -206,3 +206,42 @@ The recommended deployment:
 - **NIC 1** (Socket 1 PCIe root): KV cache bulk transfers via NIXL
 
 This ensures the two traffic classes never contend for the same physical PCIe link.
+
+---
+
+## Training: No NIXL Boundary
+
+If you are doing **distributed training** (pre-training, fine-tuning, RLHF), you do not
+use NIXL. The oneCCL/NIXL boundary is specific to disaggregated inference.
+
+In training:
+- All communication is **collective**: gradient allreduce, ZeRO reduce-scatter/allgather,
+  MoE alltoallv. These all go through oneCCL.
+- Pipeline parallelism uses **point-to-point** send/recv through oneCCL's transport layer
+  (`dist.isend`/`dist.irecv`), not NIXL.
+- There is no prefill→decode KV transfer because training does not separate those phases.
+- There is no need to separate traffic classes by NIC because all traffic is oneCCL-managed
+  collectives of similar size and priority.
+
+```
+Training workload communication:
+
+  ┌─────────────────────────────────────────────────────────┐
+  │                  Training Workload                      │
+  ├─────────────────────────────────────────────────────────┤
+  │                    oneCCL only                          │
+  │                                                         │
+  │  DP Allreduce (gradient sync)                           │
+  │  ZeRO ReduceScatter + Allgather                         │
+  │  MoE Alltoallv (expert dispatch + combine)              │
+  │  PP P2P send/recv (pipeline stage handoff)              │
+  │  TP Allreduce (same as inference)                       │
+  └─────────────────────────────────────────────────────────┘
+
+  ← NIXL does not appear here. No KV transfer, no disaggregated nodes.
+```
+
+The one exception: if you are building a **training + inference co-location system**
+where training and serving share a cluster, you may want NIXL for serving-side KV
+transfer while oneCCL handles training collectives. Keep the two process groups
+completely separate — they should not share a communicator or transport endpoint.
