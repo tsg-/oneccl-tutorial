@@ -1,15 +1,5 @@
 # Host Staging: The Scaling Wall
 
-:::{note}
-This is a technical analysis document, not step-by-step instruction. It is written in
-the style of a design note with numbered sections, source code line citations, and a
-quantitative scaling model. Read it when you need to understand *why* oneCCL scales the
-way it does at large node counts, or when diagnosing production performance regressions.
-The practical summary for day-to-day use is in [Performance Tuning](perf_tuning).
-:::
-
----
-
 ## Abstract
 
 Intel Xe GPU architectures (PVC, BMG/CRI) require all inter-node collective
