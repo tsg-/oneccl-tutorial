@@ -112,7 +112,7 @@ scaleout algorithm:
 - For benchmarking, pin both scale-up and scaleout algorithms to isolate performance
 
 > **Why ring for scaleout on NUMA-only:** See [Foundations §5.6](00_foundations) and
-> [Topology & Algorithm Selection](02_topology). Direct algorithms require
+> [Topology and Algorithm Selection](02_topology). Direct algorithms require
 > simultaneous fan-out which serializes on shared PCIe. Ring pipelines through the fabric.
 
 ```bash

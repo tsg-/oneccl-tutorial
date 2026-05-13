@@ -1,4 +1,4 @@
-# Topology & Algorithm Selection
+# Topology and Algorithm Selection
 
 ## CRI Hardware Reality: NUMA-Only
 

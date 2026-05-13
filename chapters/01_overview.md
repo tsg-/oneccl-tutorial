@@ -124,7 +124,7 @@ For a TP=4 decode cluster on CRI hardware:
 
 Each GPU holds 1/4 of the model weight. After every linear layer, an `allreduce` is needed
 to sum the partial activations. That allreduce crosses NUMA via PCIe -- topology awareness
-in ring construction is critical. See [Topology & Algorithm Selection](02_topology).
+in ring construction is critical. See [Topology and Algorithm Selection](02_topology).
 
 The critical-path latency budget for TP decode is tight. For a target TPOT of 50ms with
 80 transformer layers and 2 allreduces per layer (attention output + FFN down projection):
