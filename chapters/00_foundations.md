@@ -210,7 +210,7 @@ So the full model: **T = α + nβ + nγ** (for a combined communication + reduct
 The network interface is assumed to be **single-ported**: at most one message sent and
 one message received simultaneously. This is an important assumption — it means you
 cannot exploit simultaneous multi-peer fan-out, which is exactly why One-Shot Allreduce
-fails on PCIe-only hardware (see §5.5).
+fails on PCIe-only hardware (see §5.7).
 
 ---
 
@@ -243,7 +243,7 @@ Using the α-β model:
 Rank 0 handles 2(p-1) messages while every other rank handles 2. It is a serial bottleneck
 that does not scale.
 
-### 5.1b Ring Allreduce (Reduce-Scatter + Allgather)
+### 5.2 Ring Allreduce (Reduce-Scatter + Allgather)
 
 Ring allreduce decomposes the operation into two phases, each using the ring topology.
 Every rank sends and receives exactly once per step — no bottleneck rank.
@@ -282,7 +282,7 @@ Using the α-β model:
 The bandwidth term `2((p-1)/p)nβ` is **optimal** — no allreduce algorithm can do better
 for p > 2. Every link carries exactly (p-1)/p of the data in each phase.
 
-### 5.2 Allgather: Ring vs. Recursive Doubling
+### 5.3 Allgather: Ring vs. Recursive Doubling
 
 This is the pair analyzed in depth by Thakur & Gropp (2003). Both algorithms are optimal
 in bandwidth; they differ only in latency.
@@ -350,7 +350,7 @@ different rates.
 means intra-socket hops (fast PCIe), while recursive doubling forces cross-socket UPI
 transfers on many steps.
 
-### 5.3 Broadcast: Binary Tree vs. Van de Geijn
+### 5.4 Broadcast: Binary Tree vs. Van de Geijn
 
 **Binary tree broadcast:**
 
@@ -380,7 +380,7 @@ for p=64 it is a 3× improvement.
 
 **MPICH selection threshold:** binary tree for **< 12 KB**, Van de Geijn for **≥ 12 KB**.
 
-### 5.4 Reduce-Scatter: Recursive Halving vs. Pairwise Exchange
+### 5.5 Reduce-Scatter: Recursive Halving vs. Pairwise Exchange
 
 Reduce-scatter can be implemented several ways.
 
@@ -425,7 +425,7 @@ T_old = (lg p + p - 1)α + (lg p + (p-1)/p)nβ + n·lg(p)·γ
 
 Both new algorithms eliminate the `n·lg(p)·β` bandwidth penalty of the old approach.
 
-### 5.5 Rabenseifner's Algorithm for Reduce
+### 5.6 Rabenseifner's Algorithm for Reduce
 
 Reduce (all-to-one) has a long-message analogue to Van de Geijn broadcast. The key insight:
 
@@ -450,7 +450,7 @@ setting `CCL_ALLREDUCE` to any value other than `topo` causes oneCCL to copy dat
 host and run the CPU algorithm. Use `CCL_ALLREDUCE_SCALEOUT=rabenseifner` to select it
 for the scaleout phase only while keeping GPU-native scale-up.
 
-### 5.6 One-Shot Allreduce (for GPU Fabrics)
+### 5.7 One-Shot Allreduce (for GPU Fabrics)
 
 On hardware with direct GPU-to-GPU links (NVLink, AMD Infinity Fabric, Intel UALink/XeLink),
 each GPU can simultaneously read from and write to all other GPUs in a single pass:
@@ -554,6 +554,14 @@ These thresholds were measured on a Myrinet cluster and IBM SP in 2003. Modern h
 shifts these numbers — PCIe Gen5 has much higher bandwidth per slot than Myrinet — but
 the **algorithm family assignments** (recursive doubling for short, ring for long) remain
 correct. oneCCL calibrates its auto thresholds for Intel hardware via its internal tuning.
+
+> **oneCCL internal thresholds use element count, not bytes.** `selector_allreduce.cpp`
+> defines `CCL_ALLREDUCE_SHORT_MSG_SIZE = 8192 elements`. For BF16, that is 8192 × 2 = **16 KB**;
+> for FP32, it is 8192 × 4 = **32 KB**. The 512 KB figure above is the MPICH literature
+> value from 2003 hardware. oneCCL's calibrated threshold for modern Intel hardware is lower.
+> When reasoning about TP decode (hidden=8192, BF16 → 16 KB message), that message sits
+> right at oneCCL's SHORT/MEDIUM boundary — the selector defaults to recursive doubling
+> for the scaleout fallback and `topo` for the GPU scale-up path.
 
 **Latency-bound vs. bandwidth-bound — the rule of thumb:**
 

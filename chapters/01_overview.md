@@ -78,14 +78,20 @@ When your code calls `dist.all_reduce(tensor, op=ReduceOp.SUM)`:
 
 ### Collective Selector Thresholds
 
-The selector uses message size to choose between algorithm variants within a family.
+The selector uses message count to choose between algorithm variants within a family.
 From `selector_allreduce.cpp`:
 
 | Range | Threshold | Algorithm Tendency |
 |---|---|---|
-| SHORT | < 8192 elements | Recursive doubling (minimize steps) |
-| MEDIUM | 8192 – 1048576 elements | Ring or Rabenseifner |
-| LONG | > 1048576 elements | Ring (maximize bandwidth) |
+| SHORT | < 8192 **elements** | Recursive doubling (minimize steps) |
+| MEDIUM | 8192 – 1,048,576 **elements** | Ring or Rabenseifner |
+| LONG | > 1,048,576 **elements** | Ring (maximize bandwidth) |
+
+> **Note: thresholds are in element count, not bytes.** For BF16 (2 bytes/element):
+> SHORT is < 16 KB; MEDIUM is 16 KB – 2 MB. For FP32 (4 bytes/element):
+> SHORT is < 32 KB; MEDIUM is 32 KB – 4 MB.
+> The 512 KB threshold cited in the Foundations chapter is the MPICH literature value
+> from 2003 hardware; oneCCL's calibrated thresholds for Intel hardware are lower.
 
 These thresholds are overridden when `topo` is selected (GPU path), since `topo` handles
 its own internal decomposition.
@@ -146,7 +152,7 @@ This is deep in the latency-bound regime — startup cost dominates.
 | `CCL_ATL_TRANSPORT` | `mpi` or `ofi` | `ofi` (lower overhead) |
 | `CCL_WORKER_COUNT` | oneCCL worker threads per process | `1` (Intel recommends ≤ 1 for GPU buffers) |
 | `CCL_LOG_LEVEL` | `error`, `warn`, `info`, `debug` | `warn` in prod |
-| `CCL_ALLREDUCE` | Scale-up algorithm (default `topo` for GPU) | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
+| `CCL_ALLREDUCE` | Main allreduce algorithm. Default `topo` for GPU builds. **Setting any value other than `topo` forces GPU data through a host-staged CPU path** — never set this for GPU inference. Control only the scaleout phase via `CCL_ALLREDUCE_SCALEOUT` instead. | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
 | `CCL_PRIORITY` | Task priority mode | `lifo` for low-latency |
 | `I_MPI_PIN_DOMAIN` | MPI rank-to-core pinning | Match NUMA domains |
 | `I_MPI_FABRICS` | `shm:ofi`, `ofi`, `tcp` | `shm:ofi` |

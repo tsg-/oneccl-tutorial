@@ -84,7 +84,7 @@ What are you synchronizing?
 │
 └── KV cache transfer (Prefill → Decode nodes)
     └── → NOT oneCCL. Use NIXL.
-        See The oneCCL/NIXL Boundary for why.
+        See [The oneCCL/NIXL Boundary](nixl_boundary) for why.
 ```
 
 ---

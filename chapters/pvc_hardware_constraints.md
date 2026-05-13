@@ -1,16 +1,18 @@
 # GPU Hardware Constraints
 
-oneCCL is Intel's collective communication library. It implements operations like
-allreduce (sum a tensor across all GPUs and return the result to each), broadcast,
-and all-to-all that are on the critical path of distributed training and inference.
-When you run a transformer model across multiple GPUs, every attention and MLP layer
-ends with an allreduce. Making those allreduces fast determines how much of the GPU's
-compute capacity you can actually use.
+The previous chapters established what collectives do ([Foundations](00_foundations)),
+how oneCCL implements them ([Overview](01_overview)), and why ring construction matters
+on NUMA hardware ([Topology](02_topology)). This chapter explains the physical hardware
+limits that govern all of those choices on CRI — specifically, *why* certain algorithm
+shortcuts that work on NVIDIA hardware do not work here.
 
-This chapter explains the hardware-level constraints that limit collective performance
-on Intel Xe GPUs, focusing on CRI (Crescent Island, Xe3) with context from PVC
-(Ponte Vecchio, Xe-HPC). Both generations have the same two fundamental limits, and
-understanding them is the prerequisite for tuning anything in oneCCL.
+**What you need to understand for the Hands-On notebooks:** The two constraints at the
+top of this chapter (no intra-node GPU fabric, no GPU-initiated network I/O). Everything
+past the `topo` algorithm section is a deep dive into HMEM internals and scaling analysis
+that you can return to when diagnosing production performance issues.
+
+This chapter covers CRI (Crescent Island, Xe3) with context from PVC (Ponte Vecchio,
+Xe-HPC). Both generations share the same two fundamental limits.
 
 ---
 

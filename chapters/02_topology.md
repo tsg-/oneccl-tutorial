@@ -92,7 +92,13 @@ Ring Allreduce with topology-aware construction is the correct algorithm here.
 
 ## Topology-Aware Ring Construction
 
-The optimal ring for a 2-socket 4-GPU-per-socket node minimizes UPI crossings to exactly 2:
+The examples below use **two different node configurations** to illustrate the principle
+clearly. The opening diagram of this chapter used 4 GPUs (2 per socket, matching the
+CRI P2P matrix). The ring example below uses 8 GPUs (4 per socket) because the
+interleaving failure mode is more visible with more ranks; the principle is identical
+for 4 GPUs.
+
+**8-GPU node (4 GPUs per socket):** The optimal ring minimizes UPI crossings to exactly 2:
 
 ```
 Ring order:  GPU0 → GPU1 → GPU2 → GPU3 → GPU4 → GPU5 → GPU6 → GPU7
@@ -103,7 +109,7 @@ Ring order:  GPU0 → GPU1 → GPU2 → GPU3 → GPU4 → GPU5 → GPU6 → GPU7
 This means 6 of 8 hops stay on-socket (fast PCIe), only 2 cross UPI.
 A naively ordered ring (0,4,1,5,2,6,3,7) would alternate sockets on every hop -- 8x the UPI traffic.
 
-The difference in hop cost:
+The difference in hop cost (abbreviated to 2 GPUs per socket for diagram clarity):
 
 ```
 Topology-aware ring (socket-local hops dominate):
@@ -127,8 +133,10 @@ Naive interleaved ring (every hop crosses UPI):
 The key is ensuring MPI rank-to-socket pinning matches GPU assignment:
 
 ```bash
-# Correct: ranks 0-3 on socket 0, ranks 4-7 on socket 1
+# 8-GPU: ranks 0-3 on socket 0, ranks 4-7 on socket 1
 I_MPI_PIN_DOMAIN=socket mpirun -n 8 -ppn 8 python train.py
+# 4-GPU (2 per socket): same flag, ranks 0-1 on socket 0, ranks 2-3 on socket 1
+I_MPI_PIN_DOMAIN=socket mpirun -n 4 -ppn 4 python train.py
 
 # Verify ring construction
 CCL_LOG_LEVEL=info python script.py 2>&1 | grep -i "ring order"
@@ -141,7 +149,8 @@ What collective do you need?
 │
 ├── Allreduce (TP layer sync)
 │     ├── msg < 1MB, TP <= 8  →  Ring              ✓ Done
-│     └── msg > 1MB           →  Ring (pipelined)  ✓ Done
+│     ├── msg > 1MB           →  Ring (pipelined)  ✓ Done
+│     └── One-Shot            →  P1 (requires GPU fabric / UALink, not available on CRI)
 │
 ├── Allgather (sequence parallelism)
 │     └── any size            →  Ring              ✓ Done

@@ -11,10 +11,13 @@ parts:
       - file: chapters/pvc_hardware_constraints
         title: "GPU Hardware Constraints"
       - file: chapters/03_when_to_use
+      - file: chapters/nixl_boundary
+        title: "The oneCCL / NIXL Boundary"
 
   - caption: "Hands-On Walkthroughs"
     chapters:
       - file: notebooks/02_environment_setup
+        title: "Environment Setup (start here)"
       - file: notebooks/03a_allreduce_walkthrough
         title: "Allreduce: TP Decode Hot Path"
       - file: notebooks/03b_allgather
@@ -27,6 +30,5 @@ parts:
   - caption: "Reference"
     chapters:
       - file: chapters/perf_tuning
-      - file: chapters/nixl_boundary
       - file: chapters/host_staging_scaling
         title: "Host Staging: Scaling Limits on PVC"

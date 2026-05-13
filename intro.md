@@ -52,6 +52,11 @@ actively in development. P1 = planned, pending hardware support (e.g., GPU fabri
 
 ## Running the Notebooks
 
+Notebooks are numbered to match the concepts they exercise: notebook `02` corresponds
+to environment setup, `03a`–`03c` to the three core collectives, and `04` to the
+end-to-end decode loop. There is no notebook `01` — the Overview chapter is concepts-only.
+Start with `02_environment_setup` to verify your stack before running any benchmark.
+
 Each notebook is designed to be launched via `mpirun` from a JupyterHub terminal:
 
 ```bash

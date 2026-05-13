@@ -1,5 +1,13 @@
 # Why Host Bounce Buffers Limit oneCCL Scaling on PVC-Class Architectures
 
+:::{note}
+This is a technical analysis document, not step-by-step instruction. It is written in
+the style of a design note with numbered sections, source code line citations, and a
+quantitative scaling model. Read it when you need to understand *why* oneCCL scales the
+way it does at large node counts, or when diagnosing production performance regressions.
+The practical summary for day-to-day use is in [Performance Tuning](perf_tuning).
+:::
+
 ---
 
 ## Abstract
@@ -108,7 +116,7 @@ Send side:
 
 Receive side:
   (5) NIC DMA-writes received data → host buffer       [PCIe]
-  (6) atl_comm->wait() blocks until completion         [CPU spin]
+  (6) atl_comm->check() → if not done, atl_comm->wait() [CPU blocks]
   (7) SYCL memcpy: host buffer → GPU VRAM              [H2D over PCIe]
       q.submit([=](handler& h) { h.memcpy(recv_buf, host_buf, size); })
   (8) GPU kernel reads result from VRAM
@@ -176,19 +184,23 @@ at scale (prefill, large gradients), this fallback path triggers silently.
 `selector.hpp` defines the size thresholds:
 
 ```cpp
-#define CCL_ALLREDUCE_SHORT_MSG_SIZE   8192        // 8 KB
-#define CCL_ALLREDUCE_MEDIUM_MSG_SIZE  (1024*1024) // 1 MB
+#define CCL_ALLREDUCE_SHORT_MSG_SIZE   8192        // 8192 elements (not bytes)
+#define CCL_ALLREDUCE_MEDIUM_MSG_SIZE  (1024*1024) // 1M elements
 ```
+
+The thresholds are in **element count**. For BF16 (2 bytes/element), SHORT is < 16 KB
+and MEDIUM is < 2 MB. The `// 8 KB` comment in the source is only accurate for 1-byte
+element types.
 
 For the SYCL+ZE build (GPU path, `selector_allreduce.cpp` lines 20-46):
 - Main algorithm: `topo` for all message sizes
 - Scaleout table: `ring` for all message sizes
-- Fallback: `recursive_doubling` for 0-8 KB, `ring` for 8 KB to CCL_MAX
+- Fallback: `recursive_doubling` for 0–8192 elements (< 16 KB BF16), `ring` above
 
 For the CPU/non-ZE build with OFI:
-- 0-8 KB: `recursive_doubling`
-- 8 KB - 1 MB: `nreduce` (reduce-scatter + allgather)
-- > 1 MB: `ring`
+- 0–8192 elements (< 16 KB BF16): `recursive_doubling`
+- 8193–1,048,576 elements (16 KB – 2 MB BF16): `nreduce` (reduce-scatter + allgather)
+- > 1,048,576 elements (> 2 MB BF16): `ring`
 
 The ring algorithm has a limited overlap window
 (`is_copy_overlap_enabled()` in `coll_util.cpp`): overlap only activates for
@@ -236,8 +248,9 @@ becomes the sum of all staging stages:
          ≈ 2 + 0.5 + 1.5 + 1.5 + 0.5 + 2 = 8 us
 ```
 
-For a 16 KB message (well within the 8 KB threshold for recursive doubling,
-so this also applies per-step in the nreduce case for 8-1024 KB):
+For a 16 KB BF16 message (8192 elements — exactly at the SHORT/MEDIUM boundary, so
+recursive doubling is selected; this per-step model also applies to the nreduce case
+for messages in the 8–1024 KB range that take multiple ring steps):
 
 | N nodes | log₂(N) steps | T without staging | T with staging |
 |---|---|---|---|
@@ -265,7 +278,7 @@ T_ring ≈ 2*N * α + 2*M/β
 ```
 
 Ring's O(N) latency scaling makes it unsuitable for large-N inference.
-oneCCL uses ring only for the scaleout phase at message sizes > 8 KB where
+oneCCL uses ring only for the scaleout phase at message sizes > 8192 elements (> 16 KB BF16) where
 bandwidth efficiency matters more than latency. For decode inference (small
 messages, latency critical), recursive doubling is selected automatically
 via the threshold in `selector_allreduce.cpp`.
@@ -379,10 +392,13 @@ With multiple concurrent collectives (pipeline parallelism, multiple
 microbatches), this is a contention point independent of the PCIe bandwidth
 issue.
 
-`atl_comm->wait()` inside the host task blocks the SYCL host thread until
-MPI/OFI reports completion. This is a blocking wait, not an asynchronous
-poll. Under load, the SYCL scheduler cannot repurpose this thread for other
-work while waiting.
+Inside the host task, the code first calls `atl_comm->check()` to test for
+immediate completion, then falls through to `atl_comm->wait()` only if the
+operation is not already done. In practice for network collectives,
+`check()` returns incomplete and `wait()` is invoked — blocking the SYCL
+host thread until MPI/OFI reports completion. Under load, the SYCL
+scheduler cannot repurpose this thread for other work while it is blocked
+in `wait()`. The net effect is a blocking wait on the critical path.
 
 ### 4.4 Worker Thread Model
 
