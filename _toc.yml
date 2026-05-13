@@ -16,11 +16,11 @@ parts:
     chapters:
       - file: notebooks/02_environment_setup
       - file: notebooks/03a_allreduce_walkthrough
-        title: "Allreduce -- TP Decode Hot Path"
+        title: "Allreduce: TP Decode Hot Path"
       - file: notebooks/03b_allgather
-        title: "Allgather -- Sequence Parallelism"
+        title: "Allgather: Sequence Parallelism"
       - file: notebooks/03c_alltoall_moe
-        title: "Alltoall -- MoE Expert Routing"
+        title: "Alltoall: MoE Expert Routing"
       - file: notebooks/04_inference_tp_decode
         title: "End-to-End: TP Decode Loop"
 
