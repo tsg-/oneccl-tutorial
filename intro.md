@@ -4,12 +4,6 @@ This tutorial covers Intel's **oneAPI Collective Communications Library (oneCCL)
 of inference infrastructure -- specifically Tensor Parallelism (TP), Mixture-of-Experts (MoE) expert
 routing, and disaggregated Prefill/Decode (PD) architectures.
 
-:::{note}
-This is an internal Intel AI Group / CCO Team resource. Hardware context throughout assumes
-**CRI nodes: NUMA-only topology, no UALink/XeLink fabric.** Algorithm selection guidance is
-calibrated for both inference and distributed training workloads.
-:::
-
 ## Audience
 
 **If you are new to distributed ML or collective communication:** start with
