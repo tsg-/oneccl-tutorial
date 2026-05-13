@@ -114,11 +114,11 @@ The difference in hop cost (abbreviated to 2 GPUs per socket for diagram clarity
 ```
 Topology-aware ring (socket-local hops dominate):
 
-  Socket 0                    Socket 1
-  ┌────────────────────┐      ┌────────────────────┐
-  │ GPU0 ──→ GPU1      │      │ GPU2 ──→ GPU3      │
-  │  (PCIe: ~32 GB/s)  │      │  (PCIe: ~32 GB/s)  │
-  └─────────┬──────────┘      └──────────┬─────────┘
+  Socket 0                     Socket 1
+  ┌────────────────────┐       ┌────────────────────┐
+  │ GPU0 ──→ GPU1      │       │ GPU2 ──→ GPU3      │
+  │  (PCIe: ~32 GB/s)  │       │  (PCIe: ~32 GB/s)  │
+  └─────────┬──────────┘       └──────────┬─────────┘
             │                             │
             └──────── UPI (~50 GB/s) ─────┘
                     (only 2 hops cross)
@@ -156,8 +156,8 @@ What collective do you need?
 │     └── any size            →  Ring              ✓ Done
 │
 ├── Alltoall (MoE expert routing)
-│     ├── scale-up (intra-node) →  topo           ✓ Done
-│     └── scale-out (inter-node) → scatter        ✓ Done
+│     ├── scale-up (intra-node)  → topo            ✓ Done
+│     └── scale-out (inter-node) → scatter         ✓ Done
 │                                  (Direct/Ring = X, gap)
 │
 ├── Scatter/Gather (KV routing)
@@ -165,7 +165,7 @@ What collective do you need?
 │     └── inter-node / large  →  Use NIXL instead
 │
 └── Broadcast (control plane)
-      └── small msgs          →  Ring             ✓ Done
+      └── small msgs          →  Ring              ✓ Done
 ```
 
 ## Message Size Regimes on NUMA

@@ -412,25 +412,25 @@ HMEM Registration and Transfer Flow:
   │  1. zeMemGetAllocProperties(buf)                              │
   │     → "this is ZE device memory on device idx N"              │
   │                                                               │
-  │  2. fi_mr_regattr(buf, len, iface=FI_HMEM_ZE, device=N)      │
+  │  2. fi_mr_regattr(buf, len, iface=FI_HMEM_ZE, device=N)       │
   │     → MR handle (cached for subsequent calls)                 │
   │                                                               │
-  │  3. fi_tsendmsg(ep, msg, MR) / fi_trecvmsg(ep, msg, MR)      │
+  │  3. fi_tsendmsg(ep, msg, MR) / fi_trecvmsg(ep, msg, MR)       │
   │     → NIC uses MR to locate GPU BAR mapping                   │
   └─────────────────────────────┬─────────────────────────────────┘
                                 │
   ┌─────────────────────────────▼─────────────────────────────────┐
-  │                  libfabric (verbs provider)                    │
+  │                  libfabric (verbs provider)                   │
   │                                                               │
-  │  fi_mr_regattr → ibv_reg_dmabuf_mr(dmabuf_fd, offset, len)   │
-  │  fi_tsendmsg   → ibv_post_send(wr with GPU-mapped lkey)      │
-  │  fi_trecvmsg   → ibv_post_recv(wr with GPU-mapped lkey)      │
+  │  fi_mr_regattr → ibv_reg_dmabuf_mr(dmabuf_fd, offset, len)    │
+  │  fi_tsendmsg   → ibv_post_send(wr with GPU-mapped lkey)       │
+  │  fi_trecvmsg   → ibv_post_recv(wr with GPU-mapped lkey)       │
   └─────────────────────────────┬─────────────────────────────────┘
                                 │
   ┌─────────────────────────────▼─────────────────────────────────┐
-  │                  NIC Hardware (RDMA engine)                    │
+  │                  NIC Hardware (RDMA engine)                   │
   │                                                               │
-  │  DMA read from GPU BAR ──→ wire ──→ DMA write to GPU BAR     │
+  │  DMA read from GPU BAR ──→ wire ──→ DMA write to GPU BAR      │
   │  (no host memory involved in data path)                       │
   └───────────────────────────────────────────────────────────────┘
 ```
@@ -485,16 +485,16 @@ GPU-to-GPU DMA without any host memory staging:
 ```
 Without HMEM (default):
   Node A                                          Node B
-  ┌──────┐   ┌──────┐   ┌─────┐       ┌─────┐   ┌──────┐   ┌──────┐
-  │GPU A │──▶│Host A│──▶│NIC A│──net──▶│NIC B│──▶│Host B│──▶│GPU B │
-  └──────┘D2H└──────┘   └─────┘       └─────┘   └──────┘H2D└──────┘
+  ┌───────┐   ┌────────┐   ┌───────┐        ┌───────┐   ┌────────┐   ┌───────┐
+  │ GPU A │──▶│ Host A │──▶│ NIC A │──net──▶│ NIC B │──▶│ Host B │──▶│ GPU B │
+  └───────┘D2H└────────┘   └───────┘        └───────┘   └────────┘H2D└───────┘
   4 PCIe traversals: GPU→Host (D2H) + Host→NIC + NIC→Host + Host→GPU (H2D)
 
 With HMEM enabled on both sides:
   Node A                    Node B
-  ┌──────┐   ┌─────┐       ┌─────┐   ┌──────┐
-  │GPU A │──▶│NIC A│──net──▶│NIC B│──▶│GPU B │
-  └──────┘   └─────┘       └─────┘   └──────┘
+  ┌───────┐   ┌───────┐        ┌───────┐   ┌───────┐
+  │ GPU A │──▶│ NIC A │──net──▶│ NIC B │──▶│ GPU B │
+  └───────┘   └───────┘        └───────┘   └───────┘
   2 PCIe traversals: GPU→NIC (NIC DMA-reads GPU) + NIC→GPU (NIC DMA-writes GPU)
   Host CPU still posts fi_tsendmsg/fi_trecvmsg but data never touches host DRAM.
 ```
@@ -697,15 +697,15 @@ per transformer block (one after the attention GEMM, one after the MLP GEMM), so
 ```
 Latency Breakdown: One Allreduce (TP=4, 2 nodes, 16 KB message):
 
-  ┌───────┬─────────┬─────────┬─────────┬─────────┬─────────┬───────┐
-  │       │         │         │         │         │         │       │
-  │ D2H   │Scale-up │  D2H    │  NIC    │ Network │  NIC    │  H2D  │
-  │ copy  │(PCIe    │  copy   │  post   │ transit │  recv   │  copy │
-  │(GPU   │ P2P RS) │(staging)│  send   │         │         │(GPU   │
-  │→Host) │         │         │         │         │         │←Host) │
-  ├───────┼─────────┼─────────┼─────────┼─────────┼─────────┼───────┤
-  │  2 us │   5 us  │   2 us  │   1 us  │   5 us  │   1 us  │  2 us │
-  └───────┴─────────┴─────────┴─────────┴─────────┴─────────┴───────┘
+  ┌────────┬──────────┬─────────┬─────────┬─────────┬─────────┬────────┐
+  │        │          │         │         │         │         │        │
+  │  D2H   │ Scale-up │  D2H    │  NIC    │ Network │  NIC    │  H2D   │
+  │  copy  │ (PCIe    │  copy   │  post   │ transit │  recv   │  copy  │
+  │ (GPU   │  P2P RS) │(staging)│  send   │         │         │ (GPU   │
+  │ →Host) │          │         │         │         │         │ ←Host) │
+  ├────────┼──────────┼─────────┼─────────┼─────────┼─────────┼────────┤
+  │   2 us │    5 us  │   2 us  │   1 us  │   5 us  │   1 us  │   2 us │
+  └────────┴──────────┴─────────┴─────────┴─────────┴─────────┴────────┘
   |◀─────────────────── Total: 25-40 us ────────────────────────────▶|
 
                     |◀── host staging tax ──────────────────────────▶|
@@ -759,16 +759,16 @@ See [Perf Tuning](perf_tuning) for the full variable reference and launch templa
 CRI (current):                          Future (UALink):
 
   ┌─────────────────────────┐          ┌───────────────────────────────────┐
-  │ GPU0  GPU1  GPU2  GPU3  │          │ GPU0 ═══ GPU1 ═══ GPU2 ═══ GPU3  │
-  │   │     │     │     │   │          │   ║        ║        ║        ║   │
-  │   └─PCIe┴─PCIe┴─PCIe┘  │          │ UALink  UALink  UALink  UALink   │
-  │          │              │          │   ║        ║        ║        ║   │
-  │       CPU/UPI           │          │ GPU4 ═══ GPU5 ═══ GPU6 ═══ GPU7  │
+  │ GPU0  GPU1  GPU2  GPU3  │          │  GPU0 ═══ GPU1 ═══ GPU2 ═══ GPU3  │
+  │   │     │     │     │   │          │    ║        ║        ║        ║   │
+  │   └─PCIe┴─PCIe┴─PCIe┘   │          │  UALink  UALink  UALink  UALink   │
+  │          │              │          │    ║        ║        ║        ║   │
+  │       CPU/UPI           │          │  GPU4 ═══ GPU5 ═══ GPU6 ═══ GPU7  │
   │          │              │          └─────────────────┬─────────────────┘
-  │         NIC             │                           │
-  └──────────┼──────────────┘               NIC (GPU-attached or CXL)
-             │                                          │
-          Network                                    Network
+  │         NIC             │                            │
+  └──────────┼──────────────┘                NIC (GPU-attached or CXL)
+             │                                           │
+          Network                                     Network
 
   • All comm goes through CPU            • GPU-to-GPU via UALink (~200+ GB/s)
   • Scaleout requires host staging       • GPU-initiated RDMA to NIC

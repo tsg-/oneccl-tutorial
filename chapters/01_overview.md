@@ -21,18 +21,18 @@ oneCCL's design goals differ from NCCL in ways that matter for inference:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              PyTorch / Framework Layer                   │
+│              PyTorch / Framework Layer                  │
 ├─────────────────────────────────────────────────────────┤
 │        torch.distributed (CCL backend)                  │  ← user API
 ├─────────────────────────────────────────────────────────┤
 │          oneccl_bindings_for_pytorch                    │  ← Python bindings
 ├─────────────────────────────────────────────────────────┤
 │                  oneCCL Core                            │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  Collective Selector (algorithm dispatch)       │   │
-│  │  Schedule Builder (DAG of entries)              │   │
-│  │  Progress Engine (worker threads)               │   │
-│  └─────────────────────────────────────────────────┘   │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │  Collective Selector (algorithm dispatch)       │   │
+│   │  Schedule Builder (DAG of entries)              │   │
+│   │  Progress Engine (worker threads)               │   │
+│   └─────────────────────────────────────────────────┘   │
 ├──────────────────────┬──────────────────────────────────┤
 │   ATL/MPI Transport  │  ATL/OFI Transport (libfabric)   │
 │   (Intel MPI)        │  (PSM3 / verbs / tcp)            │

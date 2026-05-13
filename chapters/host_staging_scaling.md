@@ -71,18 +71,18 @@ Default path: OFI transport, no HMEM (production)
   ┌───────────┐                                       ┌───────────┐
   │  GPU VRAM │                                       │  GPU VRAM │
   └─────┬─────┘                                       └─────▲─────┘
-   D2H  │ PCIe                                   H2D  │ PCIe
-  ~2 us ▼                                       ~2 us │
+   D2H  │ PCIe                                         H2D  │ PCIe
+  ~2 us ▼                                             ~2 us │
   ┌───────────┐                                       ┌─────┴─────┐
   │ Host DRAM │                                       │ Host DRAM │
   │ (staging) │                                       │ (staging) │
   └─────┬─────┘                                       └─────▲─────┘
-   CPU  │ fi_tsendmsg                       CPU wait  │
-  ~1 us ▼                                       ~1 us │
+   CPU  │ fi_tsendmsg                             CPU wait  │
+  ~1 us ▼                                             ~1 us │
   ┌───────────┐                                       ┌─────┴─────┐
-  │   NIC A   │───────────── wire ~2 us ────────────▶│   NIC B   │
-  └───────────┘  NIC reads host DRAM                 └───────────┘
-                                         NIC writes host DRAM
+  │   NIC A   │───────────── wire ~2 us ────────────▶ │   NIC B   │
+  └───────────┘  NIC reads host DRAM                  └───────────┘
+                                              NIC writes host DRAM
 
   All 8 stages are sequential. Total: ~8-10 us per collective step.
   Network-only cost would be ~2-3 us.
@@ -94,10 +94,10 @@ Experimental path: OFI + CCL_ATL_HMEM=1
   ┌───────────┐                                       ┌───────────┐
   │  GPU VRAM │                                       │  GPU VRAM │
   └─────┬─────┘                                       └─────▲─────┘
-  PCIe  │ (NIC DMA-reads GPU BAR)    (NIC DMA-writes) │ PCIe
-  ~1 us ▼                                       ~1 us │
+  PCIe  │ (NIC DMA-reads GPU BAR)          (NIC DMA-writes) │ PCIe
+  ~1 us ▼                                             ~1 us │
   ┌───────────┐                                       ┌─────┴─────┐
-  │   NIC A   │───────────── wire ~2 us ────────────▶│   NIC B   │
+  │   NIC A   │───────────── wire ~2 us ────────────▶ │   NIC B   │
   └───────────┘                                       └───────────┘
   CPU still calls fi_tsendmsg, but data never touches host DRAM.
   Total: ~4 us per step.
