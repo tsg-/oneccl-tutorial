@@ -53,8 +53,50 @@ wall from roughly 64 nodes to roughly 8-16 nodes.
 ## 2. The Host Bounce Buffer Mechanism
 
 On PVC and CRI, GPU kernels cannot issue network operations. The NIC is not
-accessible from GPU-side code. All inter-node communication follows this
-sequence (from `allreduce_scaleout_sycl.cpp`, lines 29-100):
+accessible from GPU-side code. Data must bounce through host DRAM on both
+the send and receive sides:
+
+```
+Default path: OFI transport, no HMEM (production)
+
+  Node A                                               Node B
+  ┌───────────┐                                       ┌───────────┐
+  │  GPU VRAM │                                       │  GPU VRAM │
+  └─────┬─────┘                                       └─────▲─────┘
+   D2H  │ PCIe                                   H2D  │ PCIe
+  ~2 us ▼                                       ~2 us │
+  ┌───────────┐                                       ┌─────┴─────┐
+  │ Host DRAM │                                       │ Host DRAM │
+  │ (staging) │                                       │ (staging) │
+  └─────┬─────┘                                       └─────▲─────┘
+   CPU  │ fi_tsendmsg                       CPU wait  │
+  ~1 us ▼                                       ~1 us │
+  ┌───────────┐                                       ┌─────┴─────┐
+  │   NIC A   │───────────── wire ~2 us ────────────▶│   NIC B   │
+  └───────────┘  NIC reads host DRAM                 └───────────┘
+                                         NIC writes host DRAM
+
+  All 8 stages are sequential. Total: ~8-10 us per collective step.
+  Network-only cost would be ~2-3 us.
+
+
+Experimental path: OFI + CCL_ATL_HMEM=1
+
+  Node A                                               Node B
+  ┌───────────┐                                       ┌───────────┐
+  │  GPU VRAM │                                       │  GPU VRAM │
+  └─────┬─────┘                                       └─────▲─────┘
+  PCIe  │ (NIC DMA-reads GPU BAR)    (NIC DMA-writes) │ PCIe
+  ~1 us ▼                                       ~1 us │
+  ┌───────────┐                                       ┌─────┴─────┐
+  │   NIC A   │───────────── wire ~2 us ────────────▶│   NIC B   │
+  └───────────┘                                       └───────────┘
+  CPU still calls fi_tsendmsg, but data never touches host DRAM.
+  Total: ~4 us per step.
+```
+
+All inter-node communication follows this sequence
+(from `allreduce_scaleout_sycl.cpp`, lines 29-100):
 
 ```
 Send side:
@@ -536,7 +578,11 @@ The practical scaling limit for decode inference (small messages,
 latency-critical, OFI transport) is approximately 8-16 nodes with current
 oneCCL defaults. Beyond this point, allreduce latency exceeds per-layer
 compute time and tensor parallelism degrades efficiency faster than it
-improves throughput.
+improves throughput. (This estimate is derived in Section 5 using the
+alpha-beta latency model [Thakur et al., IJHPCA 2005; Chan et al., 2007],
+PVC tile FLOPS from Intel product specifications, staged alpha of 8-12 us
+per collective step measured from oneCCL source in Section 2, and validated
+against empirical Aurora data [Ibeid et al., arXiv:2512.04291].)
 
 ---
 
