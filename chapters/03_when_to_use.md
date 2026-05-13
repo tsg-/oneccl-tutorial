@@ -7,6 +7,10 @@ CRI hardware today.
 If you have not read [Foundations](00_foundations) yet, read §3 (what the collectives do) and
 §4 (algorithms) first.
 
+**Navigation:** Jump directly to [Training Workloads](#training-workloads) if you are here
+for training (DDP, ZeRO, pipeline parallelism). The inference sections are first; the
+training decision tree, ZeRO comparison, and training anti-patterns are at the bottom.
+
 ---
 
 ## Decision Framework
@@ -31,6 +35,8 @@ Before calling any collective, answer these five questions. The answers determin
    └── ≥ 512 KB → bandwidth-critical; ring wins (nearest-neighbor BW)
    (These are the measured MPICH crossover thresholds: Thakur & Gropp 2003/2005.
     See Foundations §6 for the exact per-collective breakdown.)
+   Note for training: all gradient collectives are far above this threshold
+   (GB-scale messages). Ring is always correct for training; skip this question.
 
 5. Does the result need to be on every rank, or can ranks hold different shards?
    └── Everyone needs full result → allreduce (not reduce-scatter)

@@ -62,6 +62,11 @@ oneCCL's `topo_manager` probes these conditions at `init_process_group()` time a
 builds a P2P connectivity matrix. If any pair fails the check, that pair falls back
 to host-staged copy (GPU → host buffer → GPU), adding ~2-5 µs and halving bandwidth.
 
+> **Under the hood:** P2P probing is in `src/topology/topo_manager.cpp`. The connectivity
+> result appears in `CCL_LOG_LEVEL=info` output as `topo_manager: p2p access: GPU0<->GPU1 OK`
+> or `FAILED`. A single failed pair causes the entire intra-node scale-up phase to fall back
+> to host staging — not just the pair that failed.
+
 Verify P2P connectivity:
 ```bash
 # Check if Level Zero reports peer access

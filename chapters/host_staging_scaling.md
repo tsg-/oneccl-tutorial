@@ -472,6 +472,117 @@ scaling wall earlier by the same factor.
 
 ---
 
+## 5b. Training Scaling: Bandwidth Sufficiency Wall
+
+The inference scaling analysis above addresses the **latency wall** — when allreduce latency
+exceeds per-layer compute time for decode. Training has a different scaling failure mode:
+the **bandwidth wall** — when gradient traffic exceeds the available PCIe/NIC bandwidth.
+
+For inference, the question is: *is allreduce fast enough to stay off the critical path?*
+For training, the question is: *is there enough bandwidth to move all gradients within
+the step time?*
+
+### Gradient Volume at Scale
+
+For a 7B model with BF16 parameters, the total gradient volume per step is:
+
+```
+7 × 10⁹ parameters × 2 bytes/param = 14 GB of gradients per step (DDP/ZeRO-0)
+```
+
+With ring allreduce, the data moved per rank is `2 × (p-1)/p × 14 GB`. At p=4:
+
+```
+Data per rank = 2 × 0.75 × 14 GB = 21 GB
+```
+
+At 25 GB/s effective PCIe P2P bandwidth (same single-node P2P path used for inference):
+
+```
+Time to move gradients = 21 GB / 25 GB/s = 840 ms
+```
+
+A 7B model forward + backward pass takes roughly 500–800 ms at batch=32 on a CRI node.
+This means gradient communication is **already bandwidth-bound at 4 GPUs** with DDP.
+
+### Why ZeRO Changes the Calculation
+
+ZeRO-2 and ZeRO-3 do not reduce the *total data moved* — they change *when* the data
+moves and how much is buffered at once:
+
+```
+DDP (ZeRO-0):
+  Backward: one allreduce per layer, streamed
+  Peak buffer: full model gradients (14 GB for 7B)
+  Total data moved: 2 × (p-1)/p × 14 GB per step
+
+ZeRO-2 (ReduceScatter instead of Allreduce):
+  Backward: reduce-scatter per layer — each rank receives only its shard
+  Peak buffer: 1/p of gradients (3.5 GB for 7B, p=4)
+  Total data moved: same as DDP — ReduceScatter moves the same bytes as Allreduce
+                    (both move 2 × (p-1)/p × n; allgather is skipped since each
+                    rank only needs its own shard for the optimizer update)
+
+ZeRO-3 (per-layer Allgather + ReduceScatter):
+  Forward: allgather per layer to reconstruct params, discard after
+  Backward: reduce-scatter per layer
+  Peak buffer: 1/p of params (3.5 GB for 7B, p=4)
+  Total data moved: 3 × (p-1)/p × 14 GB — MORE than DDP (extra allgather pass)
+  Trade: memory shrinks from 14 GB to 3.5 GB; bandwidth cost increases 50%
+```
+
+ZeRO-3 trades bandwidth for memory. If you are already bandwidth-bound, ZeRO-3
+makes it worse — only use it when per-GPU memory is the constraint.
+
+### Where the Training Wall Appears
+
+The training scaling wall appears when gradient communication time exceeds the
+compute time that can overlap with it:
+
+```
+T_comm = 2 × ((p-1)/p) × model_size / BW_link
+T_compute = FLOPs_per_step / (TFLOPS_per_GPU × N_GPUs)
+
+Wall condition: T_comm > T_compute (can no longer hide comm behind compute)
+```
+
+For 7B model, p=8 GPUs, 25 GB/s per-rank PCIe bandwidth, batch=32:
+
+```
+T_comm ≈ 2 × 0.875 × 14 GB / 25 GB/s ≈ 980 ms
+T_compute ≈ 2 × 7×10⁹ × 32 / (100 TFLOPS × 8) ≈ 560 ms
+
+T_comm > T_compute → bandwidth-bound at 8 GPUs for this config
+```
+
+**The training wall for oneCCL on CRI is determined by:**
+1. PCIe bandwidth to host staging buffers (same bottleneck as inference)
+2. NIC aggregate bandwidth per node (100/200 GbE × number of NICs)
+3. Model size and batch size
+
+Unlike the inference wall (which is fundamental to host staging), the training wall
+can be partially mitigated by **gradient compression**, **pipeline parallelism**
+(which replaces large allreduces with small P2P activations), and **large batch sizes**
+(more compute per byte of gradient). See [When to Use Which Collective — Training](03_when_to_use)
+for the full breakdown.
+
+### Practical Implication for CRI Training Deployments
+
+```
+Model    | Gradients | PCIe BW limit | Max GPUs before BW wall (est.)
+---------|-----------|---------------|--------------------------------
+1B  BF16 |    2 GB   |   25 GB/s     | ~32 GPUs (2 × 0.97 × 2 / 25 = 155 ms)
+7B  BF16 |   14 GB   |   25 GB/s     | ~4–8 GPUs
+13B BF16 |   26 GB   |   25 GB/s     | ~2–4 GPUs
+70B BF16 |  140 GB   |   25 GB/s     | requires multi-node + PP to stay compute-bound
+```
+
+These are estimates; the actual wall depends on batch size and whether ZeRO sharding
+is used. The key takeaway: **for large model training on CRI, pipeline parallelism
+(which avoids large allreduces) is more important than algorithm selection.**
+
+---
+
 ## 6. Empirical Validation from Aurora
 
 The Aurora benchmark data (Ibeid et al., arXiv 2512.04291) shows:

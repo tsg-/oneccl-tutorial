@@ -95,6 +95,11 @@ For batch=1, seq=1 (decode mode):
 
 This is why collective communication latency directly determines token generation speed.
 
+The identical pattern drives training performance: during backpropagation, each GPU
+computes a gradient shard for the row-parallel weights, and an allreduce is needed
+before the optimizer step — the message size grows from 16 KB to GB-scale, but the
+same algorithm families apply.
+
 ---
 
 ## 2. Ranks, World Size, and Communicators
