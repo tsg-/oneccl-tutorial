@@ -42,22 +42,24 @@ Naive all-pairs (12 messages, every link carries full redundant copies):
   GPU2 sends v_2 to GPU0, GPU1, GPU3   │  GPU3 sends v_3 to GPU0, GPU1, GPU2
   Each GPU receives 3 messages, does 3 additions. 12 transfers total, 3M bytes/GPU.
 
-Ring allreduce (8 messages, pipeline partial sums):
+Ring allreduce (4 GPUs, M bytes, broken into 4 chunks A, B, C, D):
 
-  Step 1 (reduce-scatter):
-    GPU0 → GPU1: v_0           GPU1 → GPU2: v_1          GPU2 → GPU3: v_2          GPU3 → GPU0: v_3
+  Step 1 (reduce-scatter): Every GPU sends ONE chunk (M/4 bytes) to the next GPU in the ring.
+    GPU0 sends A_0 → GPU1        GPU1 sends B_1 → GPU2
+    GPU2 sends C_2 → GPU3        GPU3 sends D_3 → GPU0
 
-    GPU1 accumulates: v_0+v_1  GPU2: v_1+v_2  GPU3: v_2+v_3  GPU0: v_3+v_0
+    GPU1 accumulates: A_0+A_1    GPU2: B_1+B_2    GPU3: C_2+C_3    GPU0: D_3+D_0
 
-  Step 2 (reduce-scatter):
-    GPU0 → GPU1: v_3+v_0      GPU1 → GPU2: v_0+v_1      GPU2 → GPU3: v_1+v_2      GPU3 → GPU0: v_2+v_3
+  Steps 2-3 (reduce-scatter): GPUs forward the newly accumulated partial sums.
+    After 3 steps total, each GPU holds exactly ONE fully summed chunk:
+    GPU0 holds sum(B)   GPU1 holds sum(C)   GPU2 holds sum(D)   GPU3 holds sum(A)
 
-    GPU1: v_0+v_1+v_2+v_3  GPU2: v_0+v_1+v_2+v_3  (one shard each has full sum)
+  Steps 4-6 (allgather): Distribute the completed chunks around the remainder of the ring.
+    GPU0 passes sum(B) → GPU1.  GPU1 passes sum(C) → GPU2.  etc.
+    After 3 steps, all GPUs have the full sum(A, B, C, D).
 
-  Steps 3-4 (allgather): distribute the completed shards.
-
-  Each GPU sends/receives exactly M bytes total — same bandwidth, but each link carries
-  unique partial sums that can't be skipped. No redundant traffic.
+  Result: 2(N-1) steps. Each link carried exactly 2 * (N-1) * (M/N) bytes.
+  No redundant data is moved, achieving optimal bandwidth utilization for large M.
 ```
 
 The structure being exploited is that every GPU has the same **kind** of value (a partial sum),

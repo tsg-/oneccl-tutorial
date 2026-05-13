@@ -321,6 +321,27 @@ this collapses to:
 T_ring ≈ 2*N * α + 2*M/β
 ```
 
+```
+Ring allreduce (4 GPUs, M bytes, broken into 4 chunks A, B, C, D):
+
+  Step 1 (reduce-scatter): Every GPU sends ONE chunk (M/4 bytes).
+    GPU0 sends A_0 → GPU1        GPU1 sends B_1 → GPU2
+    GPU2 sends C_2 → GPU3        GPU3 sends D_3 → GPU0
+
+    GPU1 accumulates: A_0+A_1    GPU2: B_1+B_2    GPU3: C_2+C_3    GPU0: D_3+D_0
+
+  Steps 2-3 (reduce-scatter): GPUs forward the newly accumulated partial sums.
+    After 3 steps, each GPU holds exactly one fully-reduced chunk:
+    GPU0 holds sum(B)   GPU1 holds sum(C)   GPU2 holds sum(D)   GPU3 holds sum(A)
+
+  Steps 4-6 (allgather): Distribute the completed chunks.
+    GPU0 passes sum(B) → GPU1.  GPU1 passes sum(C) → GPU2.  etc.
+    After 3 steps, all GPUs have the full sum(A, B, C, D).
+
+  Result: 2(N-1) = 6 steps.  Per-GPU traffic: 2(N-1)/N × M = 1.5M.
+  No redundant data moved — optimal bandwidth utilization for large M.
+```
+
 Ring's O(N) latency scaling makes it unsuitable for large-N inference.
 oneCCL uses ring only for the scaleout phase at message sizes > 8192 elements (> 16 KB BF16) where
 bandwidth efficiency matters more than latency. For decode inference (small
@@ -727,11 +748,12 @@ T_compute = FLOPs_per_step / (TFLOPS_per_GPU × N_GPUs)
 Wall condition: T_comm > T_compute (can no longer hide comm behind compute)
 ```
 
-For 7B model, p=8 GPUs, 25 GB/s per-rank PCIe bandwidth, batch=32:
+For 7B model, p=8 GPUs, 25 GB/s per-rank PCIe bandwidth,
+batch=32 sequences × seq_len=1024 = 32K tokens per step:
 
 ```
 T_comm ≈ 2 × 0.875 × 14 GB / 25 GB/s ≈ 980 ms
-T_compute ≈ 2 × 7×10⁹ × 32 / (100 TFLOPS × 8) ≈ 560 ms
+T_compute ≈ 2 × 7×10⁹ × 32×1024 / (100 TFLOPS × 8) ≈ 570 ms
 
 T_comm > T_compute → bandwidth-bound at 8 GPUs for this config
 ```
@@ -792,14 +814,17 @@ Each MoE layer executes two all-to-all collectives per forward pass:
    sent back to the originating ranks.
 ```
 
-For a batch of B tokens, with hidden_dim=7168 and top-k=8:
+For a batch of B tokens per rank, with hidden_dim=7168 and top-k=8:
 ```
-Dispatch message per rank = B × k × hidden_dim × 2 bytes / N_ranks
-                          = 128 × 8 × 7168 × 2 / 64 = 1.8 MB per rank-pair
+Dispatch traffic per node-pair = B × k × hidden_dim × 2 bytes / N_nodes
+                               = 128 × 8 × 7168 × 2 / 8 ≈ 1.8 MB per node-pair
 ```
 
-With N=8 nodes (64 ranks), each rank sends to (N-1)=7 other nodes
-simultaneously. Total data staged through host per rank per all-to-all:
+(With 256 experts across 8 nodes = 32 per node, each token's k=8 experts
+land on 8×(32/256) = 1 destination node on average — hence dividing by N_nodes.)
+
+Each rank sends to 7 other nodes simultaneously. Total data staged through
+host per rank per all-to-all:
 ```
 Data per rank = 7 × 1.8 MB = 12.6 MB
 ```
@@ -817,29 +842,30 @@ rank copies its outbound data to host DRAM at the same time, then all ranks'
 NICs DMA from host DRAM at the same time. The bottleneck is aggregate PCIe
 bandwidth saturation.
 
-On a PVC node with 12 tiles sharing 2 PCIe root complexes (32 GB/s each):
+On a PVC node with 8 ranks (2 GPUs × 4 tiles each) sharing 2 PCIe root
+complexes (32 GB/s each):
 ```
-Aggregate D2H demand = 12 tiles × 12.6 MB = 151 MB simultaneous
+Aggregate D2H demand = 8 ranks × 12.6 MB = 101 MB simultaneous
 Available PCIe BW = 2 × 32 GB/s = 64 GB/s
-Time for D2H phase = 151 MB / 64 GB/s ≈ 2.4 ms
+Time for D2H phase = 101 MB / 64 GB/s ≈ 1.6 ms
 
-Aggregate NIC demand = 151 MB to wire
+Aggregate NIC demand = 101 MB to wire
 Available NIC BW = 8 NICs × 25 GB/s = 200 GB/s
-Time for NIC phase = 151 MB / 200 GB/s ≈ 0.75 ms (NICs idle, waiting on PCIe)
+Time for NIC phase = 101 MB / 200 GB/s ≈ 0.5 ms (NICs idle, waiting on PCIe)
 ```
 
-The PCIe root complex is **3× undersupplied** vs NIC bandwidth. All tiles
+The PCIe root complex is **3× undersupplied** vs NIC bandwidth. All ranks
 contend for the same 64 GB/s of PCIe simultaneously, creating a bandwidth
 starvation that the sequential allreduce path never triggers.
 
 Total all-to-all time with host staging (D2H + network + H2D):
 ```
-T_alltoall ≈ 2.4 ms (D2H) + 0.75 ms (wire) + 2.4 ms (H2D) ≈ 5.5 ms
+T_alltoall ≈ 1.6 ms (D2H) + 0.5 ms (wire) + 1.6 ms (H2D) ≈ 3.7 ms
 ```
 
 With direct GPU RDMA (no staging, NICs DMA from GPU BAR):
 ```
-T_alltoall ≈ 151 MB / 200 GB/s ≈ 0.75 ms
+T_alltoall ≈ 101 MB / 200 GB/s ≈ 0.5 ms
 ```
 
 Host staging inflates all-to-all by **7× for MoE**, compared to 3× for
@@ -851,7 +877,7 @@ amplification; all-to-all suffers simultaneous PCIe root complex contention.
 | | Llama-3 70B (TP) | DeepSeek-R1 (EP) |
 |---|---|---|
 | Collective | allreduce | all-to-all |
-| Message size | 16 KB | 1.8 MB per rank-pair |
+| Message size | 16 KB | 1.8 MB per node-pair |
 | Scaling behavior | O(log N) steps, sequential | O(N) peers, simultaneous |
 | Staging bottleneck | Per-hop latency (α × log N) | Aggregate PCIe BW saturation |
 | Failure mode | Latency accumulation | Congestion/starvation |
