@@ -160,7 +160,7 @@ Dispatch alltoallv buffer sizes:
   ... (asymmetric per rank)
 
   Peak send buffer per GPU: ~32 tokens × 8 KB = 256 KB
-  Peak recv buffer per GPU: ~16 tokens × 8 KB = 128 KB (2 experts, max load)
+  Peak recv buffer per GPU: ~18 tokens × 8 KB = 144 KB (2 experts, max load)
 
 Combine alltoallv (reverse direction):
   Each expert output: hidden_dim × sizeof(BF16) = 8 KB per token

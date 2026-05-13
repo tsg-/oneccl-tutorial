@@ -93,7 +93,7 @@ must be summed (allreduced) to produce the correct full output. This is the orig
 For batch=1, seq=1 (decode mode):
 - Allreduce message size = hidden_dim × sizeof(BF16) = 8192 × 2 = **16,384 bytes (16 KB)**
 - With 80 layers × 2 allreduces = **160 allreduces per generated token**
-- Total data moved per token ≈ 160 × 16 KB × 2 × (3/4) = **3.84 MB** (ring, p=4)
+- Total data moved per token ≈ 160 × 16 KB × 2(N-1)/N = 160 × 16 KB × 1.5 = **3.75 MB** (ring, p=4)
 
 This is why collective communication latency directly determines token generation speed.
 
@@ -295,9 +295,9 @@ Step 2 — Broadcast from root:
 ```
 
 Using the α-β model:
-- Gather cost: (p-1)(α + nβ) + nγ
+- Gather cost: (p-1)(α + nβ) + (p-1)nγ
 - Broadcast cost: (p-1)(α + nβ)
-- **Total: 2(p-1)(α + nβ) + nγ**
+- **Total: 2(p-1)(α + nβ) + (p-1)nγ**
 
 Rank 0 handles 2(p-1) messages while every other rank handles 2. It is a serial bottleneck
 that does not scale.
@@ -319,7 +319,7 @@ Each rank accumulates the sum for its "owned" chunk.
   │       ▼       │       ▼       │       ▼
   R3 ←── R2       R3 ←── R2       R3 ←── R2
 
-After 3 steps: R0 owns sum(A), R1 owns sum(B), R2 owns sum(C), R3 owns sum(D)
+After 3 steps: R0 owns sum(B), R1 owns sum(C), R2 owns sum(D), R3 owns sum(A)
 
 Phase 2: Allgather (3 steps)
 Each rank broadcasts its reduced chunk around the ring.

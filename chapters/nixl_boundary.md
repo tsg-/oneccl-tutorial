@@ -96,17 +96,17 @@ KV caches for long-context models are massive:
 ```
 Llama-3 70B, context=4096, TP=4:
   Layers: 80
-  KV heads per TP shard: 8 (GQA)
+  KV heads per TP shard: 2 (GQA: 8 total KV heads / TP=4)
   Head dim: 128
-  KV per layer: 2 × 8 × 4096 × 128 × 2 bytes (BF16) = 16 MB
-  Total KV cache: 80 × 16 MB = 1.28 GB per TP shard
+  KV per layer per shard: 2 × 2 × 4096 × 128 × 2 bytes (BF16) = 4 MB
+  Total KV cache per shard: 80 × 4 MB = 320 MB
 
 Llama-3 70B, context=32768:
-  Total KV cache: 80 × 128 MB = 10.24 GB per TP shard
+  Total KV cache per shard: 80 × 32 MB = 2.56 GB
 ```
 
-Routing 1-10 GB through oneCCL Ring Allreduce would:
-- Consume all PCIe bandwidth for 40-400 ms (at 25 GB/s)
+Routing 320 MB–2.5 GB through oneCCL Ring Allreduce would:
+- Consume all PCIe bandwidth for 13-100 ms (at 25 GB/s)
 - Block all 160 TP allreduces during that time (stalling decode for the entire cluster)
 - Require all ranks to participate (even ranks that don't need the KV data)
 
@@ -163,19 +163,19 @@ in-flight KV transfer cannot head-of-line block a latency-critical allreduce.
 For a disaggregated Llama-3 70B deployment with continuous batching:
 
 ```
-KV cache per request (ctx=4096, TP=4): 1.28 GB
+KV cache per request (ctx=4096, TP=4): 320 MB per shard
 Network: 200 Gbps (25 GB/s) per NIC, 2 NICs per node
 
-Transfer time (1 NIC): 1.28 GB / 25 GB/s = 51 ms
-Transfer time (2 NICs, striped): 1.28 GB / 50 GB/s = 26 ms
+Transfer time (1 NIC): 320 MB / 25 GB/s = 13 ms
+Transfer time (2 NICs, striped): 320 MB / 50 GB/s = 6.4 ms
 
 Decode TPOT target: 50 ms/token
 TP comm budget per token: ~5 ms (10%)
 
 If KV transfer shared the same NIC queues as TP allreduce:
-  During the 26-51ms KV transfer window, TP allreduce latency
-  would spike from ~3ms to 20-50ms (head-of-line blocking)
-  → 10-100 tokens generated with degraded TPOT
+  During the 6-13ms KV transfer window, TP allreduce latency
+  would spike from ~3ms to 10-30ms (head-of-line blocking)
+  → 2-6 tokens generated with degraded TPOT
 ```
 
 This is why physical separation (different QPs, or different NICs) is essential, not
@@ -195,7 +195,7 @@ The PCIe Gen5 x16 bandwidth ceiling is ~32 GB/s per direction per root port. Wit
 ```
 Available PCIe bandwidth per root complex: ~32 GB/s
 TP allreduce demand (4 GPUs, ring, 16 KB msg): negligible BW, latency-bound
-KV transfer demand (1.28 GB at max rate): saturates link for 40ms
+KV transfer demand (320 MB at max rate): saturates link for 10ms
 
 If both share a root complex: KV transfer starves allreduce of PCIe slots
 Solution: route KV transfers through a separate NIC on a different PCIe root
