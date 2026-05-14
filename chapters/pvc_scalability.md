@@ -27,8 +27,8 @@ specific MPI algorithm where oneCCL source does not establish one.
 This chapter uses Aurora as the reference PVC deployment. Aurora is a 10,624-node
 machine in which each node carries two Intel Xeon Max CPUs and six Intel Data
 Center Max GPUs (PVC), connected in an all-to-all Xe Link topology inside the
-node with Slingshot-11 for inter-node traffic. The hardware baseline is therefore
-not one that lacks intra-node GPU fabric or inter-node bandwidth.
+node with Slingshot-11 for inter-node traffic. The hardware baseline therefore has both intra-node GPU fabric and inter-node
+bandwidth.
 
 The question for this chapter is narrower: which oneCCL software path is
 selected for PVC collectives? Within a node, Xe Link handles GPU communication.
@@ -297,8 +297,9 @@ Aurora":
 - that staged path is sequential and host-orchestrated
 - therefore it adds a repeated fixed software cost to scaleout
 
-That is enough to explain why host bounce buffering is a software scalability
-limit even without site-specific benchmark numbers.
+The repeated staged path is what makes host bounce buffering a software
+scalability limit — site-specific benchmark numbers would quantify the
+crossover point but are not needed to establish the mechanism.
 
 ---
 
@@ -400,8 +401,8 @@ dist.destroy_process_group()
 ```
 
 If `use_hmem: 1` does not appear, HMEM fell back to staging regardless of the
-flag. Until the Aurora system team confirms the HMEM path is active, treat host
-staging as the only verified functional path.
+flag. Until the Aurora system team confirms the HMEM path is active, host staging
+is the only path confirmed to work.
 
 ---
 
@@ -415,12 +416,11 @@ activations, stages through host memory, and executes a sequential
 
 The HMEM bypass (`CCL_ATL_HMEM=1`) requires a compatible libfabric build and
 runtime configuration (see §7). Until verified on the target deployment, host
-staging is the only confirmed functional inter-node path.
+staging is the only inter-node path confirmed to work.
 
 Host staging inserts a fixed host-mediated cost into every inter-node step.
-For small, latency-sensitive decode collectives this cost accumulates across
-steps, limiting scalability even though PVC has strong intra-node Xe Link
-bandwidth.
+For small, latency-sensitive decode collectives this accumulates across steps,
+limiting scalability even though PVC has high intra-node Xe Link bandwidth.
 
 The remaining work is to measure the workload-specific point at which that
 coefficient becomes dominant in end-to-end decode latency.

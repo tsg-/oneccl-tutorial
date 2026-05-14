@@ -201,8 +201,8 @@ P2P DMA already works through MPICH on Aurora). libfabric's util-layer
 `src/hmem_ze.c` is a complete implementation — behind `#if HAVE_ZE` — that the
 CXI provider routes through via the shared `hmem_ops[FI_HMEM_ZE]` dispatch.
 
-**The operative question is whether the libfabric deployed on Aurora has
-`FI_HMEM_ZE` working.** The most likely gate is the `HAVE_ZE` compile flag, but
+**Whether `FI_HMEM_ZE` is working in the libfabric deployed on Aurora is what
+determines whether the HMEM path is usable.** The most likely gate is the `HAVE_ZE` compile flag, but
 driver version, kernel dmabuf support, and NIC firmware can all affect whether
 the probe succeeds. If it fails, oneCCL falls back to host staging silently.
 The CXI provider also exposes a `force_ze_hmem_support` environment variable,
@@ -825,7 +825,7 @@ T_comm > T_compute → bandwidth-bound at 8 GPUs for this config
 2. NIC aggregate bandwidth per node (100/200 GbE × number of NICs)
 3. Model size and batch size
 
-Unlike the inference wall (which is fundamental to host staging), the training wall
+Unlike the inference wall (which is driven by the per-step host staging cost), the training wall
 can be partially mitigated by **gradient compression**, **pipeline parallelism**
 (which replaces large allreduces with small P2P activations), and **large batch sizes**
 (more compute per byte of gradient). See [When to Use Which Collective — Training](03_when_to_use)
@@ -1185,8 +1185,8 @@ Until one of those changes, the table above is the expected operating range.
 | `CCL_WORKER_COUNT` increase | More worker threads | Reduces serialization at high rates | L3/PCIe contention at high counts |
 | `TMP_BUF` | Pre-copies buffer for async semantics | Frees user buffer earlier | Adds 2 extra copies |
 
-None of these eliminate the fundamental staging overhead. The only structural
-fixes are:
+None of these remove the staging overhead from the data path. The two changes
+that would are:
 
 1. **Aurora libfabric `HAVE_ZE` build + HMEM validation at scale**: hardware,
    xe driver, and libfabric util-layer are all ready. Requires confirming the
@@ -1206,7 +1206,7 @@ fixes are:
 ## 9. Summary
 
 The host bounce buffer in oneCCL's default configuration adds approximately
-6-8 us of unavoidable overhead to every step of every inter-node collective.
+6-8 us of per-step overhead to every inter-node collective on this path.
 The code shows this directly:
 
 - `allreduce_scaleout_sycl.cpp` line 119: OFI forces `copy_to_host=true`
@@ -1221,7 +1221,7 @@ The code shows this directly:
 For recursive doubling at 2048 nodes (11 steps):
 
 ```
-Overhead from staging: 11 * 6 us = 66 us (structural minimum)
+Overhead from staging: 11 * 6 us = 66 us (modeled lower bound)
 Measured total: ~250 us
 NVIDIA GPUDirect equivalent: ~28 us
 ```
