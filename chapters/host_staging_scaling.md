@@ -194,19 +194,22 @@ Intel GPU allocations via `zeMemGetAllocProperties` and registers them with
 - Linux kernel ≥ 5.12 with `CONFIG_DMA_BUF` and Intel GPU driver dmabuf enabled
 - Intel GPU driver (i915/xe) with P2P dmabuf support active
 
-**On Aurora (Slingshot-11/CXI), HMEM does not work for Intel GPU memory.**
-The CXI provider implements HMEM for CUDA (`disable_dmabuf_cuda`) and ROCm
-(`disable_dmabuf_rocr`) but has no `FI_HMEM_ZE` implementation — there is no
-Intel Level Zero backend in `prov/cxi/src/`. The probe in `atl_ofi.cpp` may
-appear to succeed because CXI advertises `FI_HMEM` generically when hints
-request it, but the first `fi_mr_regattr` call with `iface=FI_HMEM_ZE` will
-fail and oneCCL will throw a fatal exception. Do not use `CCL_ATL_HMEM=1` on
-Aurora.
+**The hardware and driver stack on Aurora are capable.** The PVC xe driver
+exports GPU BAR memory as Linux dmabuf via Level Zero's
+`ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF`. The Cassini NIC can DMA from
+dmabuf-registered memory (Allcock et al. confirm GPU Direct RDMA via dma-buf
+P2P DMA already works through MPICH on Aurora). libfabric's util-layer
+`src/hmem_ze.c` is a complete implementation — behind `#if HAVE_ZE` — that the
+CXI provider routes through via the shared `hmem_ops[FI_HMEM_ZE]` dispatch.
 
-On non-CXI deployments (InfiniBand/verbs), the status requires explicit
-verification — the verbs provider has broader HMEM infrastructure. If
-`"use_hmem: 1"` does not appear in `CCL_LOG_LEVEL=info` startup output,
-oneCCL silently fell back to host staging.
+**The operative question is whether Aurora's deployed libfabric was compiled
+with `HAVE_ZE`.** If yes, `CCL_ATL_HMEM=1` can activate the HMEM path. If no,
+the probe fails silently and oneCCL falls back to host staging. The CXI provider
+also exposes a `force_ze_hmem_support` environment variable, indicating ZE was
+explicitly anticipated but treated as off-by-default.
+
+Always verify with `CCL_LOG_LEVEL=info`: if `"use_hmem: 1"` does not appear in
+startup output, HMEM fell back to staging regardless of the flag setting.
 
 ### 2.1 Staging Buffer Management
 
@@ -1027,7 +1030,7 @@ On Intel PVC in production (OFI, no HMEM):
 | Path | α per step | 2048-node recursive doubling (11 steps) |
 |---|---|---|
 | NVIDIA GPUDirect RDMA | ~2.5 us | ~28 us |
-| Intel HMEM (theoretical — not available on Aurora/CXI) | ~4 us | ~44 us |
+| Intel HMEM (`CCL_ATL_HMEM=1`, requires `HAVE_ZE` libfabric build) | ~4 us | ~44 us |
 | Intel staging (production default on Aurora) | ~8 us | ~88 us base + scheduler overhead |
 | Measured Aurora | — | ~250 us |
 
@@ -1042,13 +1045,14 @@ estimate in §2.3 and §3.1.
 
 The Intel HMEM path (`CCL_ATL_HMEM=1`) would eliminate the D2H and H2D
 copies, with the CPU still calling `fi_tsendmsg()` and data going GPU → NIC
-→ wire → NIC → GPU via PCIe BAR mapping (Linux dmabuf). However, this
-path is **not functional on Aurora**: the CXI provider has no `FI_HMEM_ZE`
-implementation for Intel GPU memory (only CUDA and ROCm backends exist in
-`prov/cxi/src/`). The ~4 µs figure is theoretical, contingent on CXI
-gaining `FI_HMEM_ZE` support. The remaining gap vs NVIDIA after that would
-be CPU-still-posts overhead (~1.5 µs/step), which UALink and GPU-initiated
-RDMA are designed to close.
+→ wire → NIC → GPU via PCIe BAR mapping (Linux dmabuf). The hardware, xe
+driver, and libfabric util-layer (`src/hmem_ze.c`, `#if HAVE_ZE`) are all
+capable — GPU Direct RDMA via dma-buf P2P DMA already works through MPICH on
+Aurora (Allcock et al.). Whether `CCL_ATL_HMEM=1` activates this path in
+oneCCL depends on whether Aurora's deployed libfabric was compiled with
+`HAVE_ZE`. The ~4 µs figure is contingent on that build fact. The remaining
+gap vs NVIDIA after that would be CPU-still-posts overhead (~1.5 µs/step),
+which UALink and GPU-initiated RDMA are designed to close.
 
 ---
 
@@ -1075,15 +1079,25 @@ to proceed while the current layer's allreduce is in flight. At N=8 nodes
 work (~5-15 µs of RMSNorm, RoPE, etc.), but this still recovers 5-15 µs
 per allreduce that would otherwise be pure stall.
 
-**2. `CCL_ATL_HMEM=1` — not usable on Aurora/CXI**
+**2. `CCL_ATL_HMEM=1` (verify before relying on it)**
 
-The HMEM path requires `FI_HMEM_ZE` support in the libfabric provider. The
-CXI provider (Slingshot-11) has no Intel Level Zero backend, so this flag
-either silently falls back to staging (if the probe fails) or causes a fatal
-exception on first use (if the probe passes but memory registration fails).
-**Do not set this flag on Aurora.** On InfiniBand/verbs deployments, verify
-explicitly with `CCL_LOG_LEVEL=info` and look for `"use_hmem: 1"` at startup.
-Until CXI gains `FI_HMEM_ZE` support, this remains a forward-path item (see §8).
+```bash
+export CCL_ATL_HMEM=1
+export CCL_LOG_LEVEL=info  # verify with: grep "use_hmem: 1" startup log
+```
+
+Eliminates the D2H and H2D memcpy steps entirely (see §2.0), cutting per-step
+latency from ~8 µs to ~4 µs. At N=8 nodes: T_comm drops from 40 µs to ~22 µs.
+
+The hardware and driver stack are capable (xe driver exports GPU BAR via
+dmabuf; libfabric util-layer `src/hmem_ze.c` has a complete `FI_HMEM_ZE`
+implementation; Cassini NIC can DMA from dmabuf-registered memory). Whether
+it activates depends on whether Aurora's deployed libfabric was compiled with
+`HAVE_ZE`. The CXI provider also has a `force_ze_hmem_support` environment
+variable that may be needed.
+
+**Always confirm with `"use_hmem: 1"` in the startup log.** If it does not
+appear, oneCCL silently fell back to host staging and the flag had no effect.
 
 **3. NUMA pinning**
 
@@ -1128,7 +1142,7 @@ For Llama-3 70B decode at N=8 nodes (64 tiles, T_compute ≈ 256 µs/layer):
 | Default (staging, no async) | 40 µs | 80 / 336 = 24% |
 | + `async_op=True` | ~25 µs visible (15 µs hidden) | 50 / 306 = 16% |
 | + NUMA pinning | ~18 µs total | 36 / 292 = 12% |
-| `CCL_ATL_HMEM=1` (not available on Aurora — CXI lacks FI_HMEM_ZE) | ~22 µs | 44 / 300 = 15% |
+| `CCL_ATL_HMEM=1` (if libfabric has `HAVE_ZE`) | ~22 µs | 44 / 300 = 15% |
 | Hypothetical GPU RDMA | ~13 µs total | 26 / 282 = 9% |
 
 At N=8 nodes, communication overhead is significant (12-24%) but not
@@ -1141,13 +1155,13 @@ adding hardware degrades tokens/second.
 
 Intel's hardware trajectory closes this gap in two steps:
 
-- **CXI provider gaining `FI_HMEM_ZE` support** (Intel Level Zero GPU memory
-  backend in the Slingshot-11 CXI libfabric provider): would enable the
-  `CCL_ATL_HMEM=1` path on Aurora and bring N=8-node allreduce from ~40 µs
-  to ~22 µs per op, reducing per-layer overhead by ~45%. This requires
-  HPE/Cray adding an Intel GPU dmabuf backend to the CXI provider — currently
-  CXI only implements HMEM for CUDA and ROCm. Until this lands, the HMEM path
-  is not available on Aurora regardless of oneCCL or firmware version.
+- **Aurora libfabric built with `HAVE_ZE`**: the hardware, xe driver, and
+  libfabric util-layer (`src/hmem_ze.c`) are all ready. The CXI provider routes
+  through the shared `FI_HMEM_ZE` dispatch and has a `force_ze_hmem_support`
+  knob. The only remaining step is confirming Aurora's deployed libfabric
+  includes `HAVE_ZE` at build time — a system configuration question, not a
+  code gap. If enabled, `CCL_ATL_HMEM=1` would bring N=8-node allreduce from
+  ~40 µs to ~22 µs per op (~45% reduction) at no hardware cost.
 
 - **GPU-initiated RDMA on future Intel hardware**: would eliminate the CPU
   from the critical post path entirely, cutting α from ~4 µs (HMEM) to ~2.5 µs
@@ -1162,7 +1176,7 @@ Until then, the table above represents the realistic operating envelope.
 |---|---|---|---|
 | `async_op=True` | Overlap collective with next layer's compute | Hides latency up to T_compute | No benefit when T_comm > T_compute |
 | `CCL_ALLREDUCE_SCALEOUT=ring` | Bandwidth-efficient for large messages | Better bandwidth, worse latency | Harmful for small-message decode |
-| `CCL_ATL_HMEM=1` | NIC reads/writes GPU memory directly | Eliminates D2H/H2D data copies | Not functional on Aurora/CXI — no FI_HMEM_ZE in CXI provider |
+| `CCL_ATL_HMEM=1` | NIC reads/writes GPU memory directly | Eliminates D2H/H2D data copies | Requires libfabric built with `HAVE_ZE`; verify `use_hmem: 1` in startup log |
 | NUMA pinning | Reduces cross-socket PCIe hops | Reduces per-tile D2H latency | Only fixes intra-node PCIe routing |
 | `CCL_WORKER_COUNT` increase | More worker threads | Reduces serialization at high rates | L3/PCIe contention at high counts |
 | `TMP_BUF` | Pre-copies buffer for async semantics | Frees user buffer earlier | Adds 2 extra copies |
@@ -1170,11 +1184,12 @@ Until then, the table above represents the realistic operating envelope.
 None of these eliminate the fundamental staging overhead. The only structural
 fixes are:
 
-1. **CXI `FI_HMEM_ZE` support + HMEM validation**: requires HPE/Cray adding
-   an Intel Level Zero GPU memory backend to the CXI provider (currently only
-   CUDA and ROCm are supported). Once available, eliminates D2H/H2D data
-   movement; leaves ~1.5 µs CPU-post overhead per step. Target latency:
-   ~44 µs at 2048 nodes vs ~250 µs today.
+1. **Aurora libfabric `HAVE_ZE` build + HMEM validation at scale**: hardware,
+   xe driver, and libfabric util-layer are all ready. Requires confirming the
+   deployed libfabric includes `HAVE_ZE` (a build/system configuration step)
+   and validating `CCL_ATL_HMEM=1` at production scale. Once confirmed,
+   eliminates D2H/H2D data movement; leaves ~1.5 µs CPU-post overhead per
+   step. Target latency: ~44 µs at 2048 nodes vs ~250 µs today.
 
 2. **GPU-initiated RDMA (future hardware)**: eliminates CPU from critical path
    entirely. Target: ~28 us at 2048 nodes, parity with NVIDIA production.

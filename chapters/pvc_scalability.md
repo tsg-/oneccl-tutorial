@@ -3,10 +3,11 @@
 ## Abstract
 
 This chapter argues that oneCCL's multi-node GPU path on Intel Ponte Vecchio
-(PVC) on Aurora is limited by host-staged scaleout. HMEM is not a usable
-alternative: the Slingshot-11 CXI libfabric provider has no `FI_HMEM_ZE`
-backend for Intel GPU memory, making host staging the only functional
-inter-node path on Aurora today. The
+(PVC) on Aurora is limited by host-staged scaleout. The HMEM bypass
+(`CCL_ATL_HMEM=1`) is unverified on Aurora: the hardware and driver stack are
+capable, but activation depends on whether Aurora's deployed libfabric was
+compiled with `HAVE_ZE`. Until confirmed, host staging is the only verified
+functional path. The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
 (2) small BF16 scaleout messages in the decode regime always select the `direct` scaleout path,
@@ -73,15 +74,16 @@ oneCCL. It does not try to model MoE expert-routing traffic.
 The central claim is:
 
 > On PVC on Aurora, oneCCL's multi-node GPU allreduce path is host-staged on
-> scaleout — this is not the default among several options but the only
-> functional path, because the CXI provider does not support `FI_HMEM_ZE` for
-> Intel GPU memory. That host staging adds a fixed software latency term to
-> every inter-node step of the collective.
+> scaleout by default. The HMEM bypass requires Aurora's libfabric to have been
+> compiled with `HAVE_ZE` — a build fact that must be verified, not assumed.
+> Until verified, host staging adds a fixed software latency term to every
+> inter-node step of the collective.
 
 The PVC scaling limit for small-message decode is therefore not set by lack of
 intra-node bandwidth. It is set by repeating a host-mediated inter-node path
-as node count grows, with no software knob currently able to bypass it on
-Aurora.
+as node count grows. The `CCL_ATL_HMEM=1` path may be able to bypass this —
+but only if the Aurora system team confirms `HAVE_ZE` is present in the
+deployed libfabric.
 
 ---
 
@@ -356,7 +358,7 @@ separate PVC analysis.
 
 ---
 
-## 7. HMEM Is Not Available on Aurora
+## 7. HMEM Status on Aurora: A Build/Deployment Question
 
 The source makes clear that HMEM is gated:
 
@@ -366,25 +368,48 @@ bool enable_hmem = (ccl::global_data::env().use_hmem && atl_base_comm::attr.out.
 
 `atl_base_comm::attr.out.enable_hmem` is set during communicator init by probing
 the libfabric provider for `FI_HMEM` support. For Intel GPU memory, oneCCL
-registers buffers with `fi_mr_regattr(iface=FI_HMEM_ZE)` — the Intel Level Zero
-HMEM interface. The CXI provider (Slingshot-11) has no `FI_HMEM_ZE` backend:
-its `prov/cxi/src/` implements HMEM only for CUDA (`disable_dmabuf_cuda`) and
-ROCm (`disable_dmabuf_rocr`).
+calls `fi_mr_regattr(iface=FI_HMEM_ZE)` — the Intel Level Zero HMEM interface.
 
-Two failure modes on Aurora:
+**Hardware and driver stack are capable.** The PVC xe driver exports GPU BAR
+memory as Linux dmabuf via Level Zero's `ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF`.
+The Cassini NIC can DMA from dmabuf-registered memory. Allcock et al.
+(arXiv:2509.08207) confirm GPU Direct RDMA via dma-buf P2P DMA already works
+on Aurora through MPICH.
 
-1. The CXI probe with `FI_HMEM` hints fails → `LOG_WARN` → `enable_hmem` stays
-   false → oneCCL silently continues with host staging. `CCL_ATL_HMEM=1`
-   appears to be accepted but does nothing.
+**libfabric has a complete ZE HMEM implementation** — in the util-layer at
+`src/hmem_ze.c` (behind `#if HAVE_ZE`), not in `prov/cxi/src/`. CXI routes
+through the shared `hmem_ops[FI_HMEM_ZE]` dispatch table and has a
+`force_ze_hmem_support` environment variable, which means ZE support was
+explicitly anticipated. No CXI-specific ZE code is needed.
 
-2. The probe passes (CXI advertises `FI_HMEM` generically when requested), but
-   the first `fi_mr_regattr` with `iface=FI_HMEM_ZE` fails → `CCL_THROW` →
-   fatal exception at first collective.
+**The operative question is a build fact:** was the libfabric deployed on Aurora
+compiled with `HAVE_ZE` enabled? If yes, `CCL_ATL_HMEM=1` may work. If no, the
+probe fails silently and oneCCL falls back to host staging. To check:
 
-Either way, `CCL_ATL_HMEM=1` is not a usable knob on Aurora today. The baseline
-host-staged path described in this note is not a choice — it is the only
-functional path. HMEM becomes available only when the CXI provider adds an Intel
-Level Zero GPU memory backend.
+```bash
+fi_info -v -p cxi 2>/dev/null | grep -i "ze\|hmem"
+# or
+python -c "
+import subprocess, os
+r = subprocess.run(['fi_info', '-p', 'cxi', '-c', 'FI_HMEM'],
+                  capture_output=True, text=True)
+print('HMEM advertised' if r.returncode == 0 else 'HMEM not advertised')
+print(r.stdout[:500])
+"
+```
+
+Also verify oneCCL actually activated it:
+```bash
+CCL_LOG_LEVEL=info mpirun -n 2 python -c "
+import oneccl_bindings_for_pytorch, torch.distributed as dist
+dist.init_process_group('ccl')
+dist.destroy_process_group()
+" 2>&1 | grep -i "use_hmem\|hmem"
+```
+
+If `use_hmem: 1` does not appear, HMEM fell back to staging regardless of the
+flag. Until the Aurora system team confirms libfabric is built with `HAVE_ZE`,
+treat host staging as the only verified functional path.
 
 ---
 
@@ -396,15 +421,19 @@ For SYCL+ZE GPU allreduce on PVC on Aurora, the library selects `topo` for the
 main GPU path, enters a small-message `direct` scaleout path for typical decode
 activations, stages through host memory, and executes a sequential
 `D2H -> host_task(allreduce + wait) -> H2D` chain in that scaleout path. Under
-OFI, that path forces `copy_to_host = true`. The HMEM bypass is not available
-on Aurora because the CXI libfabric provider has no `FI_HMEM_ZE` backend for
-Intel GPU memory — host staging is the only functional inter-node path today.
+OFI, that path forces `copy_to_host = true`.
+
+The HMEM bypass (`CCL_ATL_HMEM=1`) is architecturally possible — the hardware,
+xe driver, and libfabric util-layer (`src/hmem_ze.c`, `#if HAVE_ZE`) are all
+capable — but whether it is active on Aurora depends on whether the deployed
+libfabric was compiled with `HAVE_ZE`. Until that is confirmed, host staging
+is the only verified functional inter-node path.
 
 Host bounce buffering is not an incidental implementation detail. It is the
-only inter-node software path for PVC on Aurora. Because it inserts a fixed
-host-mediated cost into every inter-node step, it limits oneCCL scalability
-on PVC for small, latency-sensitive decode collectives even though PVC has
-strong intra-node Xe Link bandwidth.
+default and currently verified inter-node software path for PVC on Aurora.
+Because it inserts a fixed host-mediated cost into every inter-node step, it
+limits oneCCL scalability on PVC for small, latency-sensitive decode collectives
+even though PVC has strong intra-node Xe Link bandwidth.
 
 The remaining work for a system-specific study is to measure the workload-
 specific point at which that fixed coefficient becomes the dominant term in
