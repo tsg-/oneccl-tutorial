@@ -30,6 +30,8 @@ parts:
   - caption: "Reference"
     chapters:
       - file: chapters/perf_tuning
+      - file: chapters/pvc_scalability
+        title: "PVC: Host-Staged Scaleout"
       - file: chapters/host_staging_scaling
         title: "Host Staging: The Scaling Wall"
       - file: chapters/native_cpp_api

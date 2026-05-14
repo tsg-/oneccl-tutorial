@@ -428,6 +428,13 @@ Figure 12) rather than the 25 GB/s theoretical maximum: under concurrent
 staging, host DRAM bandwidth becomes the shared resource and the CPU-side
 posting overhead limits NIC utilization, not PCIe bandwidth to the GPU.
 
+The PCIe Gen4 NIC path (32 GB/s per NIC) is confirmed by two independent
+sources: Ibeid et al. (arXiv:2512.04291) cite "PCIe Gen4-PCIe Gen5 conversion
+inefficiencies" explicitly as the cause of the ~23 GB/s measured bandwidth for
+GPU-memory buffers, and Goto et al. (arXiv:2604.09517) describe the Aurora
+fabric geometry as "PCIe switches that fan out Gen5 x16 lanes to Gen4 x16
+endpoints" for the NIC-facing ports.
+
 ### 4.2 Sequential Stages with No Pipelining
 
 The `allreduce_scaleout_sycl_simple` path (lines 29-100) chains three
@@ -978,6 +985,15 @@ avoids unnecessary PCIe crossings. This improvement at just 4 nodes indicates
 that even at small scale, the staging overhead is the bottleneck — not
 algorithm selection or ring topology.
 
+A follow-on study, CoCoDiff (Ma et al., arXiv:2604.14561, 2025), reported
+**3.6× average (8.4× peak) speedup** over the oneCCL baseline when scaling
+distributed diffusion-transformer inference across 96 Intel GPU tiles (8 nodes)
+on Aurora. CoCoDiff's Tile-Aware Parallel All-to-all (TAPA) achieves this
+by aligning collective patterns with Aurora's two-tier (Xe Link intra-node,
+Slingshot inter-node) topology — the same reason the `topo` hierarchical
+algorithm in §3.3 reduces inter-node message count. That 3–8× gap at only
+8 nodes is consistent with the model in §3.1.
+
 ---
 
 ## 7. Comparison with NVIDIA GPUDirect RDMA
@@ -1009,6 +1025,11 @@ On Intel PVC in production (OFI, no HMEM):
 The gap between the 88 us model and the 250 us measurement is scheduler
 overhead in oneCCL's sched/entry framework, SYCL event graph evaluation,
 and the intra-node Xe Link phases.
+
+The CommBench micro-benchmark (Hidayetoglu et al., ICS 2024) independently
+measured **~8 µs per-step allreduce latency** on Aurora for small messages
+with the (n, 12, 12) tile configuration, corroborating the α_staged ≈ 8 µs
+estimate in §2.3 and §3.1.
 
 Intel HMEM (`CCL_ATL_HMEM=1`) eliminates the D2H and H2D copies from the
 data path. The host CPU still calls `fi_tsendmsg()` but data goes GPU → NIC
@@ -1205,8 +1226,25 @@ against empirical Aurora data [Ibeid et al., arXiv:2512.04291].)
 ### Benchmarks and Literature
 
 - Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291, Dec 2025)
+  — Aurora allreduce scaling data (Fig 14), NIC effective bandwidth (Fig 12),
+  PCIe Gen4→Gen5 conversion overhead, recursive doubling algorithm confirmation
+- Allcock et al., "Aurora: Architecting Argonne's First Exascale Supercomputer"
+  (arXiv:2509.08207, Sep 2025) — ECB topology diagram (Fig 4), PCIe Gen5 x16
+  GPU→CPU (64 GB/s), PCIe Gen4 NIC path (32 GB/s), GPU Direct RDMA via dmabuf,
+  DDR5 8-channel memory per socket, Slingshot-11 Cassini 200 Gbps NIC
+- Goto et al., "Sustaining Exascale Performance: Lessons from HPL and HPL-MxP
+  on Aurora" (arXiv:2604.09517, 2026) — independent confirmation of "PCIe switches
+  that fan out Gen5 x16 lanes to Gen4 x16 endpoints" for NIC-facing ports
 - Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library"
-  (arXiv:2408.05962, Aug 2024)
+  (arXiv:2408.05962, IPDPS 2025) — 12.1× improvement over oneCCL at 4 nodes,
+  topology-aware staging reduction
+- Hidayetoglu et al., "CommBench: Micro-benchmarking Hierarchical Networks with
+  Multi-GPU, Multi-NIC Nodes" (ICS 2024) — ~8 µs allreduce latency on Aurora,
+  (n, 12, 12) tile configuration
+- Ma et al., "CoCoDiff: Optimizing Collective Communications for Distributed
+  Diffusion Transformer Inference Under Ulysses Sequence Parallelism"
+  (arXiv:2604.14561, 2025) — 3.6× average / 8.4× peak speedup over oneCCL
+  baseline at 96 tiles (8 nodes) on Aurora; confirms staging as bottleneck
 - Thakur et al., "Optimization of Collective Communication Operations in MPICH"
   (IJHPCA, 2005) — latency/bandwidth model for ring and recursive doubling
 - Chan et al., "Collective Communication: Theory, Practice, and Experience"
