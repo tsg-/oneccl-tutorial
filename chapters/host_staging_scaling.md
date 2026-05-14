@@ -131,9 +131,12 @@ if (should_disable_rdma(ze_dev) || ccl::global_data::env().atl_transport == ccl_
 ```
 
 Even if `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` is set, line 119 overrides it to
-`true` whenever `atl_transport == ccl_atl_ofi`. Since OFI is the recommended
-transport for inference, every production deployment operates in the
-host-staged regime.
+`true` whenever `atl_transport == ccl_atl_ofi`. In the default OFI
+configuration (without `CCL_ATL_HMEM=1`), every production deployment
+operates in the host-staged regime. The HMEM path (§2.0) also uses OFI but
+bypasses host DRAM by having the NIC DMA from the GPU BAR directly; it
+requires hardware capability probing at communicator init and is currently
+experimental (see §2.0 for requirements and failure modes).
 
 The `topo` algorithm's scaleout phase has the same gate in `coll_util.cpp`:
 
@@ -281,18 +284,25 @@ Each step exchanges M bytes bidirectionally. Total latency:
 T_rd = log₂(N) * (2*α + M/β)
 ```
 
-where α is per-hop latency and β is bandwidth. Without bounce buffer, α is
-the hardware network latency (~2 us on Slingshot-11). With bounce buffer, α
-becomes the sum of all staging stages:
+where α is **one-way** per-hop latency and β is bandwidth. (The standard
+Thakur/Gropp notation folds both directions into one α; our formulation is
+equivalent — each step incurs a send-side staging cost α and a receive-side
+staging cost α, hence 2α per step.) Without bounce buffer, α is the hardware
+network latency (~2 us on Slingshot-11). With bounce buffer, α becomes the
+sum of all staging stages on one side:
 
 ```
 α_staged = α_D2H + α_host_task + α_OFI + α_network + α_wait + α_H2D
          ≈ 2 + 0.5 + 1.5 + 1.5 + 0.5 + 2 = 8 us
 ```
 
-For a 16 KB BF16 message (8192 elements — exactly at the SHORT/MEDIUM boundary, so
-recursive doubling is selected; this per-step model also applies to the nreduce case
-for messages in the 8–1024 KB range that take multiple ring steps):
+For a 16 KB BF16 message (8192 elements — exactly at the SHORT/MEDIUM boundary,
+so oneCCL's SYCL+ZE path selects `topo` → `direct` scaleout → Intel MPI
+`MPI_Allreduce`. Intel MPI selects recursive doubling for small messages; this
+is confirmed empirically by the sub-linear (log₂N) latency scaling in Ibeid
+et al., Figure 14, which matches the recursive doubling step-count model below.
+This per-step model also applies to the nreduce case for messages in the
+8–1024 KB range that take multiple ring steps):
 
 | N nodes | log₂(N) steps | T without staging | T with staging |
 |---|---|---|---|
@@ -377,39 +387,46 @@ per node), but does not change the per-step inter-node latency.
 
 ## 4. The Three Scaling Bottlenecks
 
-### 4.1 PCIe Bandwidth Saturation
+### 4.1 Host DRAM Bandwidth Saturation
 
-On a PVC node with 12 tiles, all 12 tiles stage through host memory
-simultaneously during the reduce-scatter phase. The 12 tiles share 2 PCIe
-root complexes (6 tiles per GPU/root complex). PCIe Gen4 x16 provides
-approximately 32 GB/s unidirectional. Each tile's effective bandwidth for
-staging is:
+On a PVC node with 12 tiles, all 12 tiles stage through host DRAM
+simultaneously during the reduce-scatter phase. The staging path is:
 
 ```
-BW_per_tile = 32 GB/s / 6 tiles = ~5.3 GB/s peak (contended)
+GPU VRAM → PCIe → CPU DRAM → PCIe → NIC → wire
 ```
 
-For a 16 KB message:
+The bandwidth ceiling at each hop:
+
+| Path | Aurora (PVC) | Typical BMG/CRI |
+|---|---|---|
+| PCIe GPU→CPU | Gen5 x16 = 64 GB/s per GPU, 6 GPUs → 384 GB/s aggregate | Gen5 x16, fewer GPUs |
+| CPU DRAM | DDR5-4800 8-channel Sapphire Rapids ≈ 307 GB/s per socket | Lower |
+| PCIe CPU→NIC | Separate lanes from GPU PCIe | Separate |
+| NIC aggregate | 8 × 200 Gbps = 200 GB/s (Ibeid et al., Fig. 1) | 2–4 × 100 Gbps |
+
+Aurora's GPU→PCIe bandwidth (384 GB/s) exceeds NIC demand (200 GB/s), so PCIe
+itself is not the bottleneck. The actual constraint when all 12 tiles stage
+simultaneously is **CPU DRAM bandwidth**: 12 tiles writing 16 KB each in one
+step = 192 KB, but under continuous decode at high token rate, the aggregate
+D2H + H2D demand can approach the ~307 GB/s DDR5 ceiling, leaving the NICs
+underutilized.
+
+For individual message latency (the dominant bottleneck for decode), the D2H
+transfer time is:
 
 ```
-T_D2H_contended = 16 KB / 5.3 GB/s = ~3 us
+T_D2H = 16 KB / 64 GB/s (uncontended, single GPU) ≈ 0.25 us
+T_D2H = 16 KB / (64 GB/s / 2 tiles per GPU) ≈ 0.5 us  (2 tiles sharing one GPU link)
 ```
 
-vs. uncontended:
+Contention with concurrent staging from other ranks on the same CPU socket
+pushes this toward ~1-3 us in practice — consistent with the §2.3 budget table.
 
-```
-T_D2H_uncontended = 16 KB / 32 GB/s = ~0.5 us
-```
-
-The 6x contention factor is one reason the per-step latency significantly
-exceeds what network hardware alone would require. Aurora uses 8 Slingshot-11
-Cassini NICs (200 Gbps each = 25 GB/s per NIC), providing 200 GB/s aggregate
-NIC bandwidth (Ibeid et al., Figure 1). The 6 GPUs connect via PCIe Gen5 x16
-at 64 GB/s per link (Figure 1). **The PCIe supply is 3× undersupplied relative
-to NIC demand.** This explains why Aurora measures ~23 GB/s effective per NIC
-(Ibeid et al., Figure 12: "Bandwidth for point-to-point communication
-operations with buffers located in GPU memory") rather than the 25 GB/s
-theoretical maximum: the staging path saturates before the NICs do.
+This explains why Aurora measures ~23 GB/s effective per NIC (Ibeid et al.,
+Figure 12) rather than the 25 GB/s theoretical maximum: under concurrent
+staging, host DRAM bandwidth becomes the shared resource and the CPU-side
+posting overhead limits NIC utilization, not PCIe bandwidth to the GPU.
 
 ### 4.2 Sequential Stages with No Pipelining
 
@@ -453,11 +470,15 @@ op_end = q.submit([=](sycl::handler& h) {
 });
 ```
 
-The endpoint index is hardcoded to `0` with a `TODO` comment — all collectives
-from all ranks on a node go through endpoint 0, serializing at the ATL layer.
-With multiple concurrent collectives (pipeline parallelism, multiple
-microbatches), this is a contention point independent of the PCIe bandwidth
-issue.
+The endpoint index is hardcoded to `0` with a `TODO` comment suggesting it
+should be replaced with `atl_ep->idx` or derived from `sched->bin->get_atl_ep`.
+As written, all collectives issued through this code path use endpoint 0 for
+their ATL communicator. Whether this serializes across ranks depends on whether
+each rank has its own `atl_comm` instance — with MPI transport each rank has
+distinct MPI communicator state, so contention is per-rank rather than
+node-wide. With OFI transport and shared endpoint pools, contention across
+concurrent collectives on the same rank (e.g. pipeline-parallel microbatches)
+is the more likely bottleneck.
 
 Inside the host task, the code first calls `atl_comm->check()` to test for
 immediate completion, then falls through to `atl_comm->wait()` only if the
@@ -524,8 +545,13 @@ FMAs to finish. T_compute is therefore determined by HBM bandwidth, not peak
 TFLOPS.
 
 For a representative 70B model on PVC-class hardware:
-- HBM bandwidth per tile: ~100 GB/s (PVC: 3.2 TB/s / 2 GPUs / 6 tiles/GPU;
-  BMG/CRI: lower tile count but similar per-tile BW)
+- HBM bandwidth per tile: ~100 GB/s **effective for batch=1 matrix-vector GEMMs**
+  (PVC Max 1550 peak HBM is 1.638 TB/s per tile, but batch=1 [1,K]×[K,N] GEMMs
+  achieve roughly 5–10% of peak HBM due to small working sets, cache-line
+  utilization, and memory controller overhead — giving ~80–160 GB/s sustained.
+  100 GB/s is a conservative estimate; the wall crossover shifts by ±4 nodes
+  if the true effective bandwidth is 200 GB/s. BMG/CRI: similar effective BW
+  per tile at batch=1.)
 - Weight bytes per layer (BF16): ~1.6 GB (SwiGLU MLP: 3 matrices + attention
   projections with GQA; see concrete Llama-3 70B example below for derivation)
 - T_compute per layer (1 tile, batch=1): ~1640 MB / 100 GB/s ≈ 16 ms (entire
@@ -635,18 +661,32 @@ Total comm per layer = 2 × 70 = 140 µs
 Communication fraction = 140 / (32 + 140) ≈ 81% — wall-limited
 ```
 
-The wall (T_comm > T_compute) is crossed between 16 and 64 nodes for
-Llama-3 70B batch=1 decode. In practice, the "8-16 node" claim in the abstract
-accounts for two factors not captured in the simplified model: (1) batch=1
-decode also spends significant time in non-GEMM operations (RoPE, RMSNorm,
-KV cache access) that do not parallelize across TP, creating a serial fraction
-that Amdahl's law compounds, and (2) `async_op=True` cannot fully hide T_comm
-because the allreduce result must be available before the next layer's GEMM
-can begin — the overlap window is limited to the non-dependent work between
-layers, typically only 5-15 µs.
+The pure-GEMM wall (T_comm > T_compute_GEMM) is crossed between 16 and 64 nodes.
+The abstract's "8–16 node" estimate incorporates two additional effects:
 
-The net effect: at N=8-16 nodes, adding more nodes no longer improves
-tokens/second — the allreduce overhead grows faster than the compute savings.
+**Amdahl serial fraction.** At batch=1, non-GEMM operations (RoPE, RMSNorm,
+KV cache read/write, softmax) account for roughly 20–30% of per-layer wall
+time and do not parallelize across TP. Amdahl's law gives the maximum speedup:
+
+```
+Speedup(N) = 1 / (f_serial + (1 - f_serial) / N)
+
+With f_serial = 0.25 (25% non-parallelizable):
+  N=16:  max speedup = 1 / (0.25 + 0.75/16) = 3.4×  (vs theoretical 16×)
+  N=64:  max speedup = 1 / (0.25 + 0.75/64) = 3.8×  (almost no gain over N=16)
+```
+
+The practical efficiency floor from Amdahl alone limits useful TP to ~8–16 tiles
+before the serial fraction dominates — independent of communication overhead.
+When communication overhead is added on top, the effective wall appears earlier.
+
+**Limited async overlap.** `async_op=True` can hide at most the non-GEMM work
+between layers (~5–15 µs). At N=8 nodes T_comm ≈ 40 µs, so only ~25–35% of
+the communication cost is hideable.
+
+Combining both effects: for practical Llama-3 70B decode on PVC, adding nodes
+beyond 8–16 yields diminishing returns even before the pure-GEMM wall is
+reached at 16–64 nodes.
 
 :::{note}
 For MoE models (DeepSeek-R1/V3, Mixtral), the analogous scaling wall is
@@ -839,38 +879,46 @@ hop at a time across log₂(N) steps. The bottleneck is latency accumulation
 
 **DeepSeek-R1 (all-to-all):** all N-1 rank-pairs stage *simultaneously*. Every
 rank copies its outbound data to host DRAM at the same time, then all ranks'
-NICs DMA from host DRAM at the same time. The bottleneck is aggregate PCIe
-bandwidth saturation.
+NICs DMA from host DRAM at the same time. The bottleneck is aggregate host
+DRAM bandwidth saturation (all tiles contend for the shared DDR5 bus).
 
-On a PVC node with 8 ranks (2 GPUs × 4 tiles each) sharing 2 PCIe root
-complexes (32 GB/s each):
+On a PVC node with 12 ranks (6 GPUs × 2 tiles each) sharing 2 CPU sockets
+(~307 GB/s DDR5 per socket, ~614 GB/s total host DRAM):
 ```
-Aggregate D2H demand = 8 ranks × 12.6 MB = 101 MB simultaneous
-Available PCIe BW = 2 × 32 GB/s = 64 GB/s
-Time for D2H phase = 101 MB / 64 GB/s ≈ 1.6 ms
+Aggregate D2H demand = 12 ranks × 12.6 MB = 151 MB simultaneous
+Available host DRAM BW ≈ 614 GB/s (DDR5-4800, dual socket)
+Time for D2H phase = 151 MB / 614 GB/s ≈ 0.25 ms
 
-Aggregate NIC demand = 101 MB to wire
+Aggregate NIC demand = 151 MB to wire
 Available NIC BW = 8 NICs × 25 GB/s = 200 GB/s
-Time for NIC phase = 101 MB / 200 GB/s ≈ 0.5 ms (NICs idle, waiting on PCIe)
+Time for NIC phase = 151 MB / 200 GB/s ≈ 0.75 ms (host DRAM write completes
+                                                     before NICs finish draining)
 ```
 
-The PCIe root complex is **3× undersupplied** vs NIC bandwidth. All ranks
-contend for the same 64 GB/s of PCIe simultaneously, creating a bandwidth
-starvation that the sequential allreduce path never triggers.
+The actual bottleneck shifts between host DRAM bandwidth (D2H phase) and NIC
+bandwidth (network phase) depending on load. Both are significantly slower
+than GPU RDMA would be (0.5 ms total with direct NIC-to-GPU DMA at 200 GB/s).
+All ranks contend for the shared host DRAM bus simultaneously, creating
+bandwidth saturation that the sequential allreduce path never triggers — it
+only loads one PCIe link at a time.
 
 Total all-to-all time with host staging (D2H + network + H2D):
 ```
-T_alltoall ≈ 1.6 ms (D2H) + 0.5 ms (wire) + 1.6 ms (H2D) ≈ 3.7 ms
+T_alltoall ≈ 0.25 ms (D2H, DDR5-limited) + 0.75 ms (wire, NIC-limited) + 0.25 ms (H2D) ≈ 1.25 ms
 ```
 
 With direct GPU RDMA (no staging, NICs DMA from GPU BAR):
 ```
-T_alltoall ≈ 101 MB / 200 GB/s ≈ 0.5 ms
+T_alltoall ≈ 151 MB / 200 GB/s ≈ 0.75 ms
 ```
 
-Host staging inflates all-to-all by **7× for MoE**, compared to 3× for
-allreduce. The mechanism is different: allreduce suffers per-hop latency
-amplification; all-to-all suffers simultaneous PCIe root complex contention.
+Host staging inflates all-to-all by roughly **1.7× for MoE** in this model —
+less dramatic than the allreduce case because at this data volume the NIC phase
+dominates regardless. The qualitative point stands: the simultaneous-staging
+pattern saturates the shared host DRAM bus in a way that sequential allreduce
+does not, and the CPU-to-NIC posting overhead accumulates across all 11 peer
+nodes in parallel. The mechanism is different: allreduce suffers per-hop
+latency amplification; all-to-all suffers host DRAM bus contention.
 
 ### Contrast: Llama-3 vs DeepSeek-R1 Failure Modes
 
@@ -879,7 +927,7 @@ amplification; all-to-all suffers simultaneous PCIe root complex contention.
 | Collective | allreduce | all-to-all |
 | Message size | 16 KB | 1.8 MB per node-pair |
 | Scaling behavior | O(log N) steps, sequential | O(N) peers, simultaneous |
-| Staging bottleneck | Per-hop latency (α × log N) | Aggregate PCIe BW saturation |
+| Staging bottleneck | Per-hop latency (α × log N) | Host DRAM BW saturation (simultaneous D2H) |
 | Failure mode | Latency accumulation | Congestion/starvation |
 | Wall location | N ≈ 16 nodes | N ≈ 4-8 nodes |
 | With GPU RDMA | Wall → 64+ nodes | Wall → 32+ nodes |
