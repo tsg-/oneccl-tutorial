@@ -624,11 +624,11 @@ correct. oneCCL calibrates its auto thresholds for Intel hardware via its intern
 > value from 2003 hardware. oneCCL's calibrated threshold for modern Intel hardware is lower.
 > When reasoning about TP decode (hidden=8192, BF16 → 16 KB message), that message sits
 > right at oneCCL's SHORT/MEDIUM boundary. The SYCL+ZE path selects `topo` as the main
-> algorithm. Within `topo`, the scaleout phase uses a **dedicated scaleout table** that
-> defaults to `ring` for all message sizes; a separate **fallback table** (used when the
-> main path cannot run) uses `recursive_doubling` for short messages (< 16 KB BF16) and
-> `ring` otherwise. These are distinct tables — the scaleout default is ring, not
-> recursive doubling.
+> algorithm. oneCCL maintains distinct **main**, **scaleout**, and **fallback** selector
+> tables for allreduce; those tables should not be conflated when reasoning about the
+> effective path for a given workload. The platform-specific behavior of `topo`, scaleout,
+> and fallback is traced in the [Host Staging: The Scaling Wall](host_staging_scaling)
+> chapter rather than repeated here.
 
 **Latency-bound vs. bandwidth-bound — the rule of thumb:**
 
