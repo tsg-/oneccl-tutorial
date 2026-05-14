@@ -503,11 +503,12 @@ Rabenseifner: bandwidth scales as 2nβ — a lg(p)/2 improvement, same as Van de
 
 **MPICH selection threshold:** binary tree for **≤ 2 KB**, Rabenseifner for **> 2 KB**.
 
-In oneCCL, Rabenseifner is available as `CCL_ALLREDUCE=rabenseifner` (listed as algorithm
-ID 6 in Open MPI's `coll_tuned_allreduce_algorithm` parameter). Note: for GPU buffers,
-setting `CCL_ALLREDUCE` to any value other than `topo` causes oneCCL to copy data to the
-host and run the CPU algorithm. Use `CCL_ALLREDUCE_SCALEOUT=rabenseifner` to select it
-for the scaleout phase only while keeping GPU-native scale-up.
+In oneCCL, Rabenseifner is available as `CCL_ALLREDUCE=rabenseifner` (Open MPI also
+implements this family, listed there as `rabenseifner` — the names match but the libraries
+are independent implementations). On the SYCL+ZE path, overriding the main algorithm via
+`CCL_ALLREDUCE` away from `topo` can force fallback behavior and may incur host staging
+for GPU buffers. Use `CCL_ALLREDUCE_SCALEOUT=rabenseifner` to select it for the scaleout
+phase only while keeping GPU-native scale-up.
 
 ### 5.7 One-Shot Allreduce (for GPU Fabrics)
 
@@ -554,7 +555,10 @@ This table gives you the complete algorithm space that NCCL, RCCL, and oneCCL al
 | 6 | `rabenseifner` | Long messages with reduce; ReduceScatter+Gather |
 | 7 | `allgather_reduce` | When allgather bandwidth > reduction cost |
 
-In oneCCL: `CCL_ALLREDUCE=ring` maps to ID 4; `CCL_ALLREDUCE=recursive_doubling` maps to ID 3.
+oneCCL and Open MPI implement the same algorithm families (ring, recursive doubling,
+rabenseifner), but the ID numbering is Open MPI-specific and does not map to oneCCL
+controls. Use algorithm names, not IDs, when setting `CCL_ALLREDUCE` or
+`CCL_ALLREDUCE_SCALEOUT`.
 
 ### Allgather algorithms
 
@@ -619,8 +623,12 @@ correct. oneCCL calibrates its auto thresholds for Intel hardware via its intern
 > for FP32, it is 8192 × 4 = **32 KB**. The 512 KB figure above is the MPICH literature
 > value from 2003 hardware. oneCCL's calibrated threshold for modern Intel hardware is lower.
 > When reasoning about TP decode (hidden=8192, BF16 → 16 KB message), that message sits
-> right at oneCCL's SHORT/MEDIUM boundary — the selector defaults to recursive doubling
-> for the scaleout fallback and `topo` for the GPU scale-up path.
+> right at oneCCL's SHORT/MEDIUM boundary. The SYCL+ZE path selects `topo` as the main
+> algorithm. Within `topo`, the scaleout phase uses a **dedicated scaleout table** that
+> defaults to `ring` for all message sizes; a separate **fallback table** (used when the
+> main path cannot run) uses `recursive_doubling` for short messages (< 16 KB BF16) and
+> `ring` otherwise. These are distinct tables — the scaleout default is ring, not
+> recursive doubling.
 
 **Latency-bound vs. bandwidth-bound — the rule of thumb:**
 
@@ -653,18 +661,18 @@ os.environ["CCL_ALLREDUCE_SCALEOUT"] = "recursive_doubling"
 # Reduce-scatter + gather. Best bandwidth for reduce-heavy workloads.
 os.environ["CCL_ALLREDUCE_SCALEOUT"] = "rabenseifner"
 
-# WARNING: Setting CCL_ALLREDUCE directly (not _SCALEOUT) to any value other than "topo"
-# causes oneCCL to copy GPU buffers to host memory and run a CPU algorithm.
+# NOTE: On the SYCL+ZE path reviewed here, overriding CCL_ALLREDUCE away from "topo"
+# can force fallback behavior and may incur host staging for GPU buffers.
 # For CPU-only workloads, direct setting is fine:
 os.environ["CCL_ALLREDUCE"] = "ring"  # OK for CPU buffers only
 ```
 
-For TP decode on BMG/CRI (NUMA-only, batch=1):
-- Message size ≈ 8192 × 2 bytes = **16 KB** → below all crossover thresholds
-- Recursive doubling would be the theoretically correct choice (fewer steps for small msg)
-- **But** Ring is still recommended for scaleout: the topology-aware nearest-neighbor ring
-  avoids cross-socket UPI contention, which recursive doubling's distance-doubling pattern
-  cannot exploit. The α-β model assumes all pairs are equal — NUMA violates that assumption.
+For TP decode (hidden=8192, BF16 → 16 KB message), the message falls below all
+crossover thresholds in the table above. The α-β model favors recursive doubling (fewer
+steps), but NUMA topology introduces unequal link costs that the symmetric α-β model
+does not capture. The interaction between NUMA topology and algorithm selection on
+BMG/CRI is hardware-specific; see the [Host Staging: The Scaling Wall](host_staging_scaling)
+chapter for a platform-grounded analysis.
 
 **Next:** [oneCCL Overview](01_overview) — the oneCCL API surface and where it fits in the stack.
 
