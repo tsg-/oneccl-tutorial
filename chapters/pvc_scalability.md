@@ -110,7 +110,7 @@ oneCCL path.
 
 ---
 
-## 4. Source-Code Confirmation
+## 4. Source Code
 
 ### 4.1 GPU Allreduce Enters `topo`
 
@@ -175,8 +175,7 @@ if (multi_node) {
 
 Source: `src/coll/coll_util.cpp`
 
-This is the first direct confirmation of the host bounce buffer mechanism. The
-multi-node GPU path branches on `!enable_hmem` and, in that case, prepares
+The multi-node GPU path branches on `!enable_hmem` and, in that case, prepares
 scaleout parameters using host-side buffers before entering the collective.
 Later logic decides whether an H2D copy is needed after scaleout. Together,
 these branches show that the default multi-node GPU path is staged through host
@@ -243,8 +242,7 @@ if (copy_to_host) {
 
 Source: `src/coll/algorithms/allreduce/sycl/allreduce_scaleout_sycl.cpp`
 
-This is the core confirmation of the host bounce buffer. The path is an
-explicit event chain:
+The path is a three-phase event chain:
 
 ```text
 D2H memcpy -> host_task(allreduce + wait) -> H2D memcpy
@@ -262,7 +260,7 @@ pipelining is not present here.
 
 ### 4.5 OFI Forces `copy_to_host` in This SYCL Path
 
-The same file makes the transport coupling explicit:
+The same file shows the transport coupling:
 
 ```cpp
 bool copy_to_host = ccl::global_data::env().sycl_enable_direct_gpu_rdma ? false : true;
@@ -323,7 +321,7 @@ The allreduce cost can be decomposed conceptually as:
 T_allreduce(N) = T_intra_pvc + T_scaleout(N)
 ```
 
-On PVC, `T_intra_pvc` benefits from Xe Link. The source-confirmed software issue
+On PVC, `T_intra_pvc` benefits from Xe Link. The software issue
 is in `T_scaleout(N)`.
 
 The host-staged path implies a fixed per-step coefficient of the form:
@@ -337,7 +335,7 @@ coefficient dominates the scaleout cost. As node count grows, any collective
 that requires additional inter-node steps multiplies that coefficient. At the
 same time, tensor-parallel compute per rank shrinks with scale.
 
-The consequence is straightforward:
+The result:
 
 - Xe Link improves the local phase but leaves the staged inter-node coefficient
   intact
@@ -345,11 +343,8 @@ The consequence is straightforward:
 - increasing node count reduces compute per rank faster than it reduces the
   software cost of each inter-node collective step
 
-That is the software scalability limitation due to host bounce buffering.
-
-This chapter does not need benchmark numbers to make the mechanism clear. The
-source already shows the repeated staged path. Measurements are only needed to
-determine where it becomes dominant for a given workload.
+The source shows the repeated staged path. Measurements are needed to determine
+where it becomes dominant for a given workload.
 
 For DeepSeek R1, V3, and V4 on PVC, this conclusion still matters anywhere
 oneCCL allreduce remains on the critical path. It is not the full DeepSeek
@@ -415,29 +410,23 @@ treat host staging as the only verified functional path.
 
 ## 8. Conclusion
 
-The oneCCL source code supports a precise PVC claim.
-
 For SYCL+ZE GPU allreduce on PVC on Aurora, the library selects `topo` for the
-main GPU path, enters a small-message `direct` scaleout path for typical decode
+main GPU path, enters a small-message `direct` scaleout path for decode
 activations, stages through host memory, and executes a sequential
-`D2H -> host_task(allreduce + wait) -> H2D` chain in that scaleout path. Under
-OFI, that path forces `copy_to_host = true`.
+`D2H -> host_task(allreduce + wait) -> H2D` chain. Under OFI, that path forces
+`copy_to_host = true`.
 
-The HMEM bypass (`CCL_ATL_HMEM=1`) is architecturally possible — the hardware,
-xe driver, and libfabric util-layer (`src/hmem_ze.c`, `#if HAVE_ZE`) are all
-capable — but whether it is active on Aurora depends on whether the deployed
-libfabric was compiled with `HAVE_ZE`. Until that is confirmed, host staging
-is the only verified functional inter-node path.
+The HMEM bypass (`CCL_ATL_HMEM=1`) requires Aurora's libfabric to have been
+compiled with `HAVE_ZE`. Until that is verified, host staging is the only
+confirmed functional inter-node path.
 
-Host bounce buffering is not an incidental implementation detail. It is the
-default and currently verified inter-node software path for PVC on Aurora.
-Because it inserts a fixed host-mediated cost into every inter-node step, it
-limits oneCCL scalability on PVC for small, latency-sensitive decode collectives
-even though PVC has strong intra-node Xe Link bandwidth.
+Host staging is not an incidental implementation detail on this path — it inserts
+a fixed host-mediated cost into every inter-node step, which limits scalability
+for small, latency-sensitive decode collectives even though PVC has strong
+intra-node Xe Link bandwidth.
 
-The remaining work for a system-specific study is to measure the workload-
-specific point at which that fixed coefficient becomes the dominant term in
-end-to-end decode latency.
+The remaining work is to measure the workload-specific point at which that
+coefficient becomes dominant in end-to-end decode latency.
 
 ---
 

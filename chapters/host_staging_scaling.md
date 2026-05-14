@@ -9,8 +9,7 @@ step of a distributed collective algorithm. At small node counts the overhead
 is tolerable. Beyond roughly 8-16 nodes for latency-sensitive workloads (decode
 inference), the compounded penalty exceeds per-layer compute time and the system
 becomes communication-bound in a way that no algorithm tuning can escape, because
-the bottleneck is architectural, not algorithmic. This paper analyzes the
-mechanism with specific reference to oneCCL source code, derives the scaling
+the bottleneck is architectural, not algorithmic. This chapter traces the mechanism through oneCCL source code, derives the scaling
 behavior quantitatively, and identifies the conditions under which the wall
 appears.
 
@@ -23,8 +22,7 @@ broadcast, all-to-all, and other operations that are on the critical path of
 distributed training and inference. In a transformer model sharded across N
 GPUs via tensor parallelism, every attention and MLP layer ends with an allreduce
 that sums partial results across all ranks and returns the total to each. The
-latency of this allreduce subtracts directly from the time budget for each
-generated token.
+latency of this allreduce subtracts from the time budget for each generated token.
 
 The time to execute one allreduce has two components:
 
@@ -840,8 +838,8 @@ Model    | Gradients | PCIe BW limit | Max GPUs before BW wall (est.)
 ```
 
 These are estimates; the actual wall depends on batch size and whether ZeRO sharding
-is used. The key takeaway: **for large model training on BMG/CRI, pipeline parallelism
-(which avoids large allreduces) is more important than algorithm selection.**
+is used. For large model training on BMG/CRI, pipeline parallelism (which avoids
+large allreduces) matters more than algorithm selection.
 
 ---
 
@@ -849,8 +847,8 @@ is used. The key takeaway: **for large model training on BMG/CRI, pipeline paral
 
 DeepSeek-R1 (671B total, ~37B active per token, 256 experts) cannot fit on a
 single node — it physically requires Expert Parallelism (EP) across multiple
-nodes. This forces a fundamentally different traffic pattern than Llama-3's TP
-allreduce, and it hits the host staging wall through a different mechanism.
+nodes. This forces a different traffic pattern than Llama-3's TP allreduce, and it hits
+the host staging wall through a different mechanism.
 
 ### Why Expert Parallelism Requires Multi-Node
 
@@ -890,7 +888,7 @@ Data per rank = 7 × 1.8 MB = 12.6 MB
 
 ### The Congestion Mechanism: Simultaneous Staging
 
-Here is the critical difference from Llama-3's allreduce:
+The difference from Llama-3's allreduce:
 
 **Llama-3 (allreduce):** data moves through host staging *sequentially* — one
 hop at a time across log₂(N) steps. The bottleneck is latency accumulation
@@ -1203,7 +1201,7 @@ fixes are:
 
 The host bounce buffer in oneCCL's default configuration adds approximately
 6-8 us of unavoidable overhead to every step of every inter-node collective.
-The code evidence is unambiguous:
+The code shows this directly:
 
 - `allreduce_scaleout_sycl.cpp` line 119: OFI forces `copy_to_host=true`
   unconditionally, regardless of `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA`
