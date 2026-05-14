@@ -148,7 +148,7 @@ Unhealthy — P2P fell back to host staging:
 [CCL][info] topo/allreduce: scale_up via host_buf (p2p unavailable)
 ```
 
-This is the most important line to check. If `scale_up via host_buf` appears, you are paying
+Check this line first. If `scale_up via host_buf` appears, you are paying
 host-staging cost for intra-node communication. Expected intra-node bandwidth drops from
 ~25 GB/s (PCIe P2P) to ~5-10 GB/s.
 

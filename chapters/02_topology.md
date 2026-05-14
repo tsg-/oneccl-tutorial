@@ -3,7 +3,7 @@
 ## BMG/CRI Hardware Reality: NUMA-Only
 
 BMG/CRI inference nodes use **NUMA-only intra-node topology** -- no UALink, no XeLink fabric.
-This is the single most important constraint driving algorithm selection.
+It shapes every algorithm choice in this chapter.
 
 ```
 Socket 0 (NUMA 0)          Socket 1 (NUMA 1)
@@ -97,8 +97,7 @@ Ring Allreduce with topology-aware construction is the correct algorithm here.
 
 ## Topology-Aware Ring Construction
 
-The examples below use **two different node configurations** to illustrate the principle
-clearly. The opening diagram of this chapter used 4 GPUs (2 per socket, matching the
+The examples below use **two different node configurations** to show the same principle. The opening diagram of this chapter used 4 GPUs (2 per socket, matching the
 BMG/CRI P2P matrix). The ring example below uses 8 GPUs (4 per socket) because the
 interleaving failure mode is more visible with more ranks; the principle is identical
 for 4 GPUs.
@@ -135,7 +134,7 @@ Naive interleaved ring (every hop crosses UPI):
 ```
 
 **oneCCL constructs topology-aware rings automatically when NUMA affinity is set correctly.**
-The key is ensuring MPI rank-to-socket pinning matches GPU assignment:
+MPI rank-to-socket pinning must match GPU assignment:
 
 ```bash
 # 8-GPU: ranks 0-3 on socket 0, ranks 4-7 on socket 1
@@ -211,9 +210,9 @@ Time for ring allreduce (bandwidth-bound regime):
   T_total ≈ 130 µs  (44% regression from NUMA misalignment)
 ```
 
-This quantifies why NUMA pinning is the single biggest lever: misalignment doesn't just
-add latency to 2 hops — it degrades the effective bandwidth of every hop that crosses
-UPI, compounding across all (p-1) ring steps.
+NUMA pinning has outsized impact because misalignment degrades the effective bandwidth of
+every hop that crosses UPI, compounding across all (p-1) ring steps — not just the 2 hops
+that cross sockets.
 
 ## Practical Verification
 

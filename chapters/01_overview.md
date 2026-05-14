@@ -138,10 +138,10 @@ For a TP=4 decode cluster on BMG/CRI hardware:
 ```
 
 Each GPU holds 1/4 of the model weight. After every linear layer, an `allreduce` is needed
-to sum the partial activations. That allreduce crosses NUMA via PCIe — topology awareness
-in ring construction is critical. See [Topology and Algorithm Selection](02_topology).
+to sum the partial activations. That allreduce crosses NUMA via PCIe — ring construction order matters here.
+See [Topology and Algorithm Selection](02_topology).
 
-The critical-path latency budget for TP decode is tight. For a target TPOT of 50ms with
+The TP decode latency budget is tight. For a target TPOT of 50ms with
 80 transformer layers and 2 allreduces per layer (attention output + FFN down projection):
 
 ```
@@ -226,9 +226,9 @@ oneCCL cannot assume GPU fabric (BMG/CRI has none) and cannot fuse collectives i
 - Uses **host-staged OFI transport** for inter-node communication
 - Relies on **overlap with compute** (via `async_op`) to hide latency
 
-This architectural difference means oneCCL's optimization surface is fundamentally different:
-NCCL optimizes kernel fusion and NVLink scheduling; oneCCL optimizes copy engine utilization,
-host staging pipeline depth, and NUMA-aware ring construction.
+The two libraries optimize different things: NCCL optimizes kernel fusion and NVLink
+scheduling; oneCCL optimizes copy engine utilization, host staging pipeline depth, and
+NUMA-aware ring construction.
 
 For Intel XPU inference: **oneCCL is the only production-grade option.**
 

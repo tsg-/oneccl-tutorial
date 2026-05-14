@@ -12,7 +12,7 @@ past the `topo` algorithm section is a deep dive into HMEM internals and scaling
 that you can return to when diagnosing production performance issues.
 
 This chapter covers BMG/CRI (Battlemage / Crescent Island, Xe3) with context from PVC
-(Ponte Vecchio, Xe-HPC). Both generations share the same two fundamental limits.
+(Ponte Vecchio, Xe-HPC). Both generations share the same two limits.
 
 ---
 
@@ -35,8 +35,8 @@ through this two-copy path by default.
 Neither PVC nor BMG/CRI can bypass this: the GPU cannot autonomously post network
 operations. The host CPU always orchestrates every send/recv to the NIC. In
 standard deployments, all inter-node (scaleout) traffic is copied through host
-memory. This is the primary scalability limitation of Intel Xe GPUs compared to
-NVIDIA GPUDirect RDMA, which has been production-grade for over a decade.
+memory. By comparison, NVIDIA GPUDirect RDMA has been production-grade for over a decade and
+eliminates this path for CUDA workloads.
 
 The term "GPU Direct" is often used loosely. There are actually four separate
 capabilities, each with different hardware requirements:
@@ -99,7 +99,7 @@ On BMG/CRI, even the **scale-up phase** (intra-node) is constrained:
 - No direct GPU-to-GPU path exists without going through PCIe
 - Level Zero IPC handles enable P2P DMA over PCIe, but bandwidth is limited
 - Cross-socket GPU pairs traverse UPI, adding latency and contention
-- NUMA pinning is the single biggest performance lever on BMG/CRI for this reason
+- NUMA pinning is the biggest performance lever on BMG/CRI for this reason
 
 ---
 
@@ -157,7 +157,7 @@ to host memory and run a CPU-side algorithm, losing even the PCIe P2P scale-up p
 
 ## Scaleout Limitation: Host Staging Is the Default
 
-Both PVC and BMG/CRI **always host-stage inter-node traffic by default**. This is the
+Both PVC and BMG/CRI **always host-stage inter-node traffic by default** — this is the
 scalability wall in production.
 
 OFI (OpenFabrics Interfaces) is the network transport that oneCCL uses for
@@ -500,7 +500,7 @@ With HMEM enabled on both sides:
 ```
 
 Both the send path and receive path in `atl_ofi.cpp` use the HMEM MR cache for GPU
-buffers. Specifically:
+buffers:
 - **Send** (line ~481): `fi_tsendmsg()` with MR obtained from `cache.get()`, the
   sending NIC DMA-reads directly from GPU A's memory
 - **Recv** (line ~522): `fi_trecvmsg()` with MR obtained from `cache.get()`, the
@@ -733,8 +733,8 @@ Given BMG/CRI's constraints (no fabric, no GPU-initiated network I/O):
    can eliminate this in theory but is experimental and not production-ready.
 
 5. **Use `async_op=True` to overlap.** While one collective is in the host staging
-   phase, the GPU can run compute for the next layer. This is the primary
-   mechanism to hide communication latency.
+   phase, the GPU can run compute for the next layer — the main mechanism
+   for hiding communication latency.
 
 6. **Don't enable `CCL_ATL_HMEM=1` in production** unless explicitly validated on
    your driver/kernel/NIC stack. It's experimental and can cause silent hangs.

@@ -384,7 +384,7 @@ in the latency term: `(p-1)α` for Ring vs. `lg(p)α` for Recursive Doubling.
 - Messages **< 512 KB**: Recursive Doubling (fewer steps = lower latency)
 - Messages **≥ 512 KB**: Ring
 
-**Why ring wins for large messages — the critical insight from the paper:**
+**Why ring wins for large messages — what the paper found:**
 
 > "For long messages (> 512 KB), however, we find that recursive doubling runs much
 > slower than the ring algorithm... We believe this difference is because of the difference
@@ -486,7 +486,7 @@ Both new algorithms eliminate the `n·lg(p)·β` bandwidth penalty of the old ap
 
 ### 5.6 Rabenseifner's Algorithm for Reduce
 
-Reduce (all-to-one) has a long-message analogue to Van de Geijn broadcast. The key insight:
+Reduce (all-to-one) has a long-message analogue to Van de Geijn broadcast:
 
 > "Rabenseifner implements a long-message reduce effectively as a **reduce-scatter
 > followed by a gather to the root**, which has the same effect of reducing the bandwidth

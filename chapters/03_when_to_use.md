@@ -128,7 +128,7 @@ input_split_sizes  = [n_tokens_from_rank_j for j in range(world_size)] # what I 
 dist.all_to_all_single(output, input, output_split_sizes, input_split_sizes)
 ```
 
-**MoE inference always uses alltoallv.** Token routing is never perfectly balanced. If you
+**MoE inference should use alltoallv, not alltoall.** Token routing is never perfectly balanced. If you
 use the fixed-size `alltoall` with imbalanced routing, you waste bandwidth on padding.
 
 ### Worked Example: MoE Buffer Sizing
@@ -170,7 +170,7 @@ Total alltoallv data per MoE layer: ~512 KB – 1 MB (both directions)
 With 8 MoE layers in a 32-layer model: ~4-8 MB total MoE comm per forward pass
 ```
 
-The key insight: MoE alltoallv messages are **medium-sized** (100 KB–1 MB per rank pair)
+MoE alltoallv messages are **medium-sized** (100 KB–1 MB per rank pair)
 and **asymmetric**. The `topo` algorithm handles this correctly — it uses scatter for the
 scaleout phase, which supports variable-length messages natively.
 
@@ -230,7 +230,7 @@ correctness test before deploying.
 
 ## Training Workloads
 
-Training uses the same collectives as inference but in different configurations. The critical
+Training uses the same collectives as inference but in different configurations. The main
 difference is **message size regime**: inference decode is latency-bound (16 KB, 160×/token),
 while training gradient sync is bandwidth-bound (GB-scale, 1×/step). The algorithm families
 are the same — ring for large messages, recursive doubling for small — but the right operating

@@ -4,7 +4,7 @@
 
 Disaggregated inference architectures separate **prefill** (prompt processing, compute-heavy)
 from **decode** (token generation, memory-bandwidth-heavy) across different node pools. This
-creates two fundamentally different communication patterns that require different libraries:
+creates two distinct communication patterns that require different libraries:
 
 | Traffic Class | Characteristics | Size | Pattern | Owner |
 |---|---|---|---|---|
@@ -15,9 +15,9 @@ creates two fundamentally different communication patterns that require differen
 | KV cache tiering | Offload to storage, async | GB-scale | Point-to-point directed | **NIXL** |
 | Prompt tokens | Variable, request-routing | 1 KB – 1 MB | Point-to-point or broadcast | **NIXL or oneCCL** |
 
-The fundamental distinction: **oneCCL implements collective synchronization** (all ranks
-participate, all ranks block until completion). **NIXL implements directed data movement**
-(one sender, one receiver, fully asynchronous, no global synchronization).
+**oneCCL implements collective synchronization**: all ranks participate and all block until
+completion. **NIXL implements directed data movement**: one sender, one receiver, fully
+asynchronous, no global synchronization.
 
 Mixing these patterns in a single library creates contention: a large KV transfer on the
 same transport as a latency-critical allreduce will delay the allreduce by the transfer
@@ -133,7 +133,7 @@ while state != "done":
     state = agent.check_xfer_state(xfer_handle)
 ```
 
-oneCCL collectives are fundamentally **synchronous barriers** — even with `async_op=True`,
+oneCCL collectives are **synchronous barriers** — even with `async_op=True`,
 all ranks must eventually call the collective and the result is only valid after all ranks
 complete. This barrier semantics is correct for TP (you need all partial sums before
 continuing) but wrong for KV transfer (only one rank needs the data).
@@ -178,8 +178,7 @@ If KV transfer shared the same NIC queues as TP allreduce:
   → 2-6 tokens generated with degraded TPOT
 ```
 
-This is why physical separation (different QPs, or different NICs) is essential, not
-optional.
+Physical separation (different QPs, or different NICs) is required to avoid this.
 
 ---
 

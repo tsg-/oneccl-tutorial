@@ -5,13 +5,15 @@
 Intel Xe GPU architectures (PVC, BMG/CRI) require all inter-node collective
 communication to pass through host DRAM by default. This "host bounce buffer"
 design imposes a fixed per-step latency penalty that compounds across every
-step of a distributed collective algorithm. At small node counts the overhead
-is tolerable. Beyond roughly 8-16 nodes for latency-sensitive workloads (decode
-inference), the compounded penalty exceeds per-layer compute time and the system
-becomes communication-bound in a way that no algorithm tuning can escape, because
-the bottleneck is architectural, not algorithmic. This chapter traces the mechanism through oneCCL source code, derives the scaling
-behavior quantitatively, and identifies the conditions under which the wall
-appears.
+step of a distributed collective algorithm. For latency-sensitive workloads
+(decode inference), the alpha-beta model derived in §3 estimates that the
+compounded penalty exceeds per-layer compute time somewhere in the 8–16 node
+range — beyond which adding nodes reduces compute time faster than it reduces
+per-token communication cost. The bounce buffer cost comes from the software
+data path, not from network bandwidth, so it cannot be removed by algorithm
+selection alone without changing how data reaches the NIC. This chapter traces
+the mechanism through oneCCL source code, derives the scaling behavior
+quantitatively, and identifies the conditions under which the wall appears.
 
 ---
 
@@ -41,8 +43,8 @@ E(N) = T_serial / (N * T_parallel(N))
 When `T_communication` grows faster than `T_compute_local` shrinks, efficiency
 degrades. The node count at which `T_communication >= T_compute_local` is the
 practical scaling wall. For Intel Xe GPUs, the host bounce buffer inflates
-`T_communication` by 3-5x per step relative to a GPU RDMA path, shifting that
-wall from roughly 64 nodes to roughly 8-16 nodes.
+`T_communication` by 3-5x per step relative to a GPU RDMA path; §3 and §5
+derive the implied scaling crossover for a representative decode workload.
 
 ---
 
@@ -130,8 +132,8 @@ if (should_disable_rdma(ze_dev) || ccl::global_data::env().atl_transport == ccl_
 
 Even if `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` is set, line 119 overrides it to
 `true` whenever `atl_transport == ccl_atl_ofi`. In the default OFI
-configuration (without `CCL_ATL_HMEM=1`), every production deployment
-operates in the host-staged regime. The HMEM path (§2.0) also uses OFI but
+configuration (without `CCL_ATL_HMEM=1`), any deployment without a confirmed
+HMEM path operates in the host-staged regime. The HMEM path (§2.0) also uses OFI but
 bypasses host DRAM by having the NIC DMA from the GPU BAR directly; it
 requires hardware capability probing at communicator init and is currently
 experimental (see §2.0 for requirements and failure modes).
@@ -153,8 +155,7 @@ H2D — no overlap between stages.
 
 The diagram above shows "OFI + CCL_ATL_HMEM=1" as a path where data never
 touches host DRAM. This seems to contradict the `copy_to_host = true` override
-at line 119. The resolution: **HMEM and `allreduce_scaleout_sycl_simple` are
-completely different code paths that share no code.**
+at line 119. They are different code paths: **HMEM and `allreduce_scaleout_sycl_simple` share no code.**
 
 The `coll_util.cpp` gate is the branching point:
 
@@ -184,7 +185,7 @@ The `copy_to_host = true` line in `allreduce_scaleout_sycl.cpp` only overrides
 the `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` knob within the sycl scaleout path. That
 code is only entered when `enable_hmem == false`. There is no contradiction.
 
-**The catch:** `CCL_ATL_HMEM=1` requires a libfabric provider with `FI_HMEM_ZE`
+**Requirements for the HMEM path:** `CCL_ATL_HMEM=1` requires a libfabric provider with `FI_HMEM_ZE`
 support (Intel Level Zero GPU memory). oneCCL's memory registration identifies
 Intel GPU allocations via `zeMemGetAllocProperties` and registers them with
 `fi_mr_regattr(iface=FI_HMEM_ZE)`. Additional OS/driver requirements:
@@ -200,11 +201,12 @@ P2P DMA already works through MPICH on Aurora). libfabric's util-layer
 `src/hmem_ze.c` is a complete implementation — behind `#if HAVE_ZE` — that the
 CXI provider routes through via the shared `hmem_ops[FI_HMEM_ZE]` dispatch.
 
-**The operative question is whether Aurora's deployed libfabric was compiled
-with `HAVE_ZE`.** If yes, `CCL_ATL_HMEM=1` can activate the HMEM path. If no,
-the probe fails silently and oneCCL falls back to host staging. The CXI provider
-also exposes a `force_ze_hmem_support` environment variable, indicating ZE was
-explicitly anticipated but treated as off-by-default.
+**The operative question is whether the libfabric deployed on Aurora has
+`FI_HMEM_ZE` working.** The most likely gate is the `HAVE_ZE` compile flag, but
+driver version, kernel dmabuf support, and NIC firmware can all affect whether
+the probe succeeds. If it fails, oneCCL falls back to host staging silently.
+The CXI provider also exposes a `force_ze_hmem_support` environment variable,
+indicating ZE was explicitly anticipated but treated as off-by-default.
 
 Always verify with `CCL_LOG_LEVEL=info`: if `"use_hmem: 1"` does not appear in
 startup output, HMEM fell back to staging regardless of the flag setting.
@@ -245,10 +247,11 @@ element types.
 
 For the SYCL+ZE build (GPU path, `selector_allreduce.cpp` lines 20-46):
 - Main algorithm: `topo` for all message sizes
-- Scaleout (SYCL path, production): `direct` for BF16 ≤ 1-4 MB depending on
-  comm_size (delegates to Intel MPI's native `MPI_Allreduce`, which internally
-  selects recursive doubling for small messages). Ring or rabenseifner for larger
-  messages. Selection logic: `sycl_selection.cpp:330-380`.
+- Scaleout (SYCL path): `direct` for BF16 ≤ 1-4 MB depending on comm_size
+  (delegates to the underlying MPI `MPI_Allreduce`; the sub-linear latency
+  scaling in Ibeid et al. Figure 14 is consistent with recursive doubling, but
+  the MPI algorithm selection is not established from oneCCL source). Ring or
+  rabenseifner for larger messages. Selection logic: `sycl_selection.cpp:330-380`.
 - Scaleout (scheduler fallback path): `ring` for all sizes (`scaleout_table`, line 46)
 - Fallback: `recursive_doubling` for 0–8192 elements (< 16 KB BF16), `ring` above
 
@@ -307,12 +310,11 @@ sum of all staging stages on one side:
 ```
 
 For a 16 KB BF16 message (8192 elements — exactly at the SHORT/MEDIUM boundary,
-so oneCCL's SYCL+ZE path selects `topo` → `direct` scaleout → Intel MPI
-`MPI_Allreduce`. Intel MPI selects recursive doubling for small messages; this
-is confirmed empirically by the sub-linear (log₂N) latency scaling in Ibeid
-et al., Figure 14, which matches the recursive doubling step-count model below.
-This per-step model also applies to the nreduce case for messages in the
-8–1024 KB range that take multiple ring steps):
+oneCCL's SYCL+ZE path selects `topo` → `direct` scaleout → MPI `MPI_Allreduce`.
+The sub-linear (log₂N) latency scaling in Ibeid et al., Figure 14 is consistent
+with recursive doubling; the model below uses log₂(N) steps on that basis.
+The same per-step structure applies to any algorithm with logarithmic step count):
+
 
 | N nodes | log₂(N) steps | T without staging | T with staging |
 |---|---|---|---|
@@ -329,8 +331,9 @@ for: oneCCL scheduler overhead, SYCL event graph management, atl_comm
 endpoint contention, and the intra-node Xe Link phases within each PVC node
 that are serialized before the inter-node step.
 
-The fundamental result: **the bounce buffer adds ~130 us to allreduce latency
-at 2048 nodes compared to a hypothetical direct GPU RDMA path.**
+The model estimates **~130 us of added allreduce latency at 2048 nodes compared
+to a hypothetical direct GPU RDMA path** — the gap between the staged α and the
+hardware network latency, accumulated across 11 steps.
 
 ### 3.2 Ring Allreduce
 
@@ -551,9 +554,11 @@ T_compute per layer ≈ weight_bytes_per_layer / (HBM_BW * N_tiles_per_node * N_
 T_comm per allreduce ≈ T_intranode + log₂(N_nodes) * α_staged
 ```
 
-(The log₂(N) term reflects the recursive doubling algorithm that Intel MPI
-selects for small messages. The SYCL topo scaleout path uses `direct` which
-delegates to MPI's native allreduce — see §2.2 and `sycl_selection.cpp`.)
+(The log₂(N) term reflects a recursive-doubling step count, which is consistent
+with the sub-linear scaling in Ibeid et al. Figure 14. The SYCL topo scaleout
+path uses `direct` and delegates to MPI's native allreduce — see §2.2 and
+`sycl_selection.cpp`. The MPI-internal algorithm selection is not visible from
+oneCCL source.)
 
 At batch=1 decode, GEMMs have shape [1,K]×[K,N] — arithmetic intensity ≈ 1
 FLOP/byte, so execution is memory-bandwidth-limited, not compute-limited.
@@ -1028,8 +1033,8 @@ On Intel PVC in production (OFI, no HMEM):
 | Path | α per step | 2048-node recursive doubling (11 steps) |
 |---|---|---|
 | NVIDIA GPUDirect RDMA | ~2.5 us | ~28 us |
-| Intel HMEM (`CCL_ATL_HMEM=1`, requires `HAVE_ZE` libfabric build) | ~4 us | ~44 us |
-| Intel staging (production default on Aurora) | ~8 us | ~88 us base + scheduler overhead |
+| Intel HMEM (`CCL_ATL_HMEM=1`, if `FI_HMEM_ZE` confirmed active) | ~4 us | ~44 us |
+| Intel staging (current verified baseline on Aurora) | ~8 us | ~88 us base + scheduler overhead |
 | Measured Aurora | — | ~250 us |
 
 The gap between the 88 us model and the 250 us measurement is scheduler
@@ -1046,9 +1051,9 @@ copies, with the CPU still calling `fi_tsendmsg()` and data going GPU → NIC
 → wire → NIC → GPU via PCIe BAR mapping (Linux dmabuf). The hardware, xe
 driver, and libfabric util-layer (`src/hmem_ze.c`, `#if HAVE_ZE`) are all
 capable — GPU Direct RDMA via dma-buf P2P DMA already works through MPICH on
-Aurora (Allcock et al.). Whether `CCL_ATL_HMEM=1` activates this path in
-oneCCL depends on whether Aurora's deployed libfabric was compiled with
-`HAVE_ZE`. The ~4 µs figure is contingent on that build fact. The remaining
+Aurora (Allcock et al.). Whether `CCL_ATL_HMEM=1` activates this path depends on the deployed libfabric
+build and runtime configuration. The ~4 µs figure is contingent on the HMEM
+path being confirmed active. The remaining
 gap vs NVIDIA after that would be CPU-still-posts overhead (~1.5 µs/step),
 which UALink and GPU-initiated RDMA are designed to close.
 
@@ -1071,8 +1076,8 @@ handle = dist.all_reduce(tensor, async_op=True)
 handle.wait()
 ```
 
-This is the single highest-leverage change. It allows the next layer's compute
-to proceed while the current layer's allreduce is in flight. At N=8 nodes
+This allows the next layer's compute to proceed while the current layer's
+allreduce is in flight — the most direct way to reduce visible stall time. At N=8 nodes
 (T_comm=40 µs), the overlap window is limited to non-dependent inter-layer
 work (~5-15 µs of RMSNorm, RoPE, etc.), but this still recovers 5-15 µs
 per allreduce that would otherwise be pure stall.
@@ -1090,9 +1095,10 @@ latency from ~8 µs to ~4 µs. At N=8 nodes: T_comm drops from 40 µs to ~22 µs
 The hardware and driver stack are capable (xe driver exports GPU BAR via
 dmabuf; libfabric util-layer `src/hmem_ze.c` has a complete `FI_HMEM_ZE`
 implementation; Cassini NIC can DMA from dmabuf-registered memory). Whether
-it activates depends on whether Aurora's deployed libfabric was compiled with
-`HAVE_ZE`. The CXI provider also has a `force_ze_hmem_support` environment
-variable that may be needed.
+it activates depends on the deployed libfabric build and runtime configuration
+— the `HAVE_ZE` compile flag is the most common gate, but driver version and
+kernel dmabuf support also matter. The CXI provider has a
+`force_ze_hmem_support` environment variable that may also be needed.
 
 **Always confirm with `"use_hmem: 1"` in the startup log.** If it does not
 appear, oneCCL silently fell back to host staging and the flag had no effect.
@@ -1124,7 +1130,7 @@ contention on the staging buffers increases per-operation latency.
 
 ```bash
 export CCL_ALLREDUCE_SCALEOUT=ring  # large messages only (prefill, training)
-# leave unset for decode (recursive doubling is auto-selected and correct)
+# leave unset for decode (MPI selects a log-step algorithm internally)
 ```
 
 For large-message allreduces (> 2 MB BF16, common in prefill and training),
@@ -1140,33 +1146,33 @@ For Llama-3 70B decode at N=8 nodes (64 tiles, T_compute ≈ 256 µs/layer):
 | Default (staging, no async) | 40 µs | 80 / 336 = 24% |
 | + `async_op=True` | ~25 µs visible (15 µs hidden) | 50 / 306 = 16% |
 | + NUMA pinning | ~18 µs total | 36 / 292 = 12% |
-| `CCL_ATL_HMEM=1` (if libfabric has `HAVE_ZE`) | ~22 µs | 44 / 300 = 15% |
+| `CCL_ATL_HMEM=1` (if `FI_HMEM_ZE` confirmed active) | ~22 µs | 44 / 300 = 15% |
 | Hypothetical GPU RDMA | ~13 µs total | 26 / 282 = 9% |
 
-At N=8 nodes, communication overhead is significant (12-24%) but not
-dominant. The real danger zone is N=16+ nodes where T_compute drops to
-~128 µs and communication fraction reaches 44%+. The practical operating
-point for Llama-3 70B decode on BMG/CRI is 4–8 nodes; beyond 16 nodes,
-adding hardware degrades tokens/second.
+At N=8 nodes, communication overhead is 12-24% — significant but not yet
+dominant. At N=16+ nodes, T_compute drops to ~128 µs and communication
+fraction reaches 44%+. For Llama-3 70B decode on BMG/CRI, the model
+suggests 4–8 nodes as a reasonable operating range; beyond 16 nodes,
+allreduce growth outpaces the compute savings from adding ranks.
 
-### The Forward Path
+### What Would Change This
 
-Intel's hardware trajectory closes this gap in two steps:
+Two things would reduce the bounce buffer cost:
 
-- **Aurora libfabric built with `HAVE_ZE`**: the hardware, xe driver, and
-  libfabric util-layer (`src/hmem_ze.c`) are all ready. The CXI provider routes
-  through the shared `FI_HMEM_ZE` dispatch and has a `force_ze_hmem_support`
-  knob. The only remaining step is confirming Aurora's deployed libfabric
-  includes `HAVE_ZE` at build time — a system configuration question, not a
-  code gap. If enabled, `CCL_ATL_HMEM=1` would bring N=8-node allreduce from
-  ~40 µs to ~22 µs per op (~45% reduction) at no hardware cost.
+- **HMEM path confirmed on Aurora**: the hardware, xe driver, and libfabric
+  util-layer (`src/hmem_ze.c`) are all capable. The CXI provider routes through
+  the shared `FI_HMEM_ZE` dispatch and has a `force_ze_hmem_support` knob. The
+  remaining step is verifying that Aurora's deployed libfabric, driver, and
+  kernel stack have `FI_HMEM_ZE` active — a deployment question, not a code gap.
+  If confirmed, `CCL_ATL_HMEM=1` would bring N=8-node allreduce from ~40 µs to
+  ~22 µs per op (~45% reduction) at no hardware cost.
 
 - **GPU-initiated RDMA on future Intel hardware**: would eliminate the CPU
   from the critical post path entirely, cutting α from ~4 µs (HMEM) to ~2.5 µs
   (GPU-posted NIC DMA). This approaches NVIDIA GPUDirect parity and would push
   the practical scaling wall from ~16 nodes to approximately 64+ nodes.
 
-Until then, the table above represents the realistic operating envelope.
+Until one of those changes, the table above is the expected operating range.
 
 ### Mitigation Strategies and Their Ceilings
 
@@ -1174,7 +1180,7 @@ Until then, the table above represents the realistic operating envelope.
 |---|---|---|---|
 | `async_op=True` | Overlap collective with next layer's compute | Hides latency up to T_compute | No benefit when T_comm > T_compute |
 | `CCL_ALLREDUCE_SCALEOUT=ring` | Bandwidth-efficient for large messages | Better bandwidth, worse latency | Harmful for small-message decode |
-| `CCL_ATL_HMEM=1` | NIC reads/writes GPU memory directly | Eliminates D2H/H2D data copies | Requires libfabric built with `HAVE_ZE`; verify `use_hmem: 1` in startup log |
+| `CCL_ATL_HMEM=1` | NIC reads/writes GPU memory directly | Eliminates D2H/H2D data copies | Requires `FI_HMEM_ZE` in deployed libfabric (build + runtime); verify `use_hmem: 1` in startup log |
 | NUMA pinning | Reduces cross-socket PCIe hops | Reduces per-tile D2H latency | Only fixes intra-node PCIe routing |
 | `CCL_WORKER_COUNT` increase | More worker threads | Reduces serialization at high rates | L3/PCIe contention at high counts |
 | `TMP_BUF` | Pre-copies buffer for async semantics | Frees user buffer earlier | Adds 2 extra copies |
@@ -1208,7 +1214,7 @@ The code shows this directly:
 - `allreduce_scaleout_sycl.cpp` line 33: `TODO: chunking/pipelining` — the
   sequential D2H → allreduce → H2D pipeline has no overlap implementation
 - `allreduce_scaleout_sycl.cpp` line 66: `ep_idx = 0; // TODO: use correct
-  endpoint index` — all collectives serialize through one ATL endpoint
+  endpoint index` — this collective call uses a fixed endpoint index
 - `coll_util.cpp` (scaleout path): `!enable_hmem` gates D2H copy for every
   inter-node allreduce, allgather, reduce-scatter, all-to-all, and reduce
 
@@ -1220,16 +1226,16 @@ Measured total: ~250 us
 NVIDIA GPUDirect equivalent: ~28 us
 ```
 
-The practical scaling limit for decode inference (small messages,
-latency-critical, OFI transport) is approximately 8-16 nodes with current
-oneCCL defaults. Beyond this point, allreduce latency exceeds per-layer
-compute time and tensor parallelism degrades efficiency faster than it
-improves throughput. (This estimate is derived in Section 5 using the
-alpha-beta latency model [Thakur et al., IJHPCA 2005; Chan et al., 2007],
-PVC tile HBM bandwidth from Intel product specifications, memory-bound
-per-layer weight streaming time at batch=1, staged alpha of 8-12 us per
-collective step measured from oneCCL source in Section 2, and validated
-against empirical Aurora data [Ibeid et al., arXiv:2512.04291].)
+The alpha-beta model in Section 5 — using PVC tile HBM bandwidth from Intel
+product specifications, memory-bound per-layer weight streaming time at
+batch=1, and a staged α of 8-12 µs per step from the source analysis in
+Section 2 — estimates the scaling crossover at approximately 8-16 nodes for
+decode inference with current oneCCL defaults. Beyond that point, allreduce
+latency exceeds per-layer compute time and tensor parallelism degrades
+efficiency faster than it improves throughput. The Aurora data from Ibeid et
+al. (arXiv:2512.04291) is consistent with this model but does not pin the
+workload-specific crossover; measuring it requires end-to-end decode profiling
+on the target model and node count.
 
 ---
 

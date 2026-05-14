@@ -121,8 +121,7 @@ Key points about this pattern:
 
 ## Overlapping Compute and Communication
 
-The key optimization for inference is running the collective on one queue while a compute
-kernel runs on another. This hides allreduce latency behind GEMM time.
+For inference, run the collective on one queue while a compute kernel runs on another. This hides allreduce latency behind GEMM time.
 
 The pattern requires **two separate SYCL queues**: one for compute, one for CCL operations.
 A SYCL event ties them together:

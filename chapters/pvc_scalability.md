@@ -5,9 +5,9 @@
 This chapter argues that oneCCL's multi-node GPU path on Intel Ponte Vecchio
 (PVC) on Aurora is limited by host-staged scaleout. The HMEM bypass
 (`CCL_ATL_HMEM=1`) is unverified on Aurora: the hardware and driver stack are
-capable, but activation depends on whether Aurora's deployed libfabric was
-compiled with `HAVE_ZE`. Until confirmed, host staging is the only verified
-functional path. The
+capable, but whether it activates depends on the deployed libfabric build and
+runtime configuration (see §7). Until confirmed, host staging is the only
+verified functional path. The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
 (2) small BF16 scaleout messages in the decode regime always select the `direct` scaleout path,
@@ -24,25 +24,20 @@ specific MPI algorithm where oneCCL source does not establish one.
 
 ## 1. Introduction
 
-This chapter uses Aurora as the reference PVC deployment. Recent Aurora system
-papers describe a 10,624-node machine in which each node carries two Intel
-Xeon Max CPUs and six Intel Data Center Max GPUs (PVC), with the GPUs
-connected in an all-to-all Xe Link topology inside the node and Slingshot-11
-used for inter-node scaleout. That matters here because it removes ambiguity
-about the hardware baseline: Aurora already provides a strong intra-node GPU
-fabric and a large production scaleout network.
+This chapter uses Aurora as the reference PVC deployment. Aurora is a 10,624-node
+machine in which each node carries two Intel Xeon Max CPUs and six Intel Data
+Center Max GPUs (PVC), connected in an all-to-all Xe Link topology inside the
+node with Slingshot-11 for inter-node traffic. The hardware baseline is therefore
+not one that lacks intra-node GPU fabric or inter-node bandwidth.
 
-Those same Aurora papers also make the hardware-software boundary clearer. At
-the platform level, Aurora is not defined by an absence of GPU-to-network
-capability. The narrower question for this chapter is which oneCCL software path
-is actually selected for PVC collectives. Within a node, Xe Link provides high-
-bandwidth GPU communication. Across nodes, the software stack still determines
-whether GPU data reaches the NIC directly or passes through host memory.
+The question for this chapter is narrower: which oneCCL software path is
+selected for PVC collectives? Within a node, Xe Link handles GPU communication.
+Across nodes, the software stack determines whether GPU data reaches the NIC
+directly or passes through host memory.
 
-For oneCCL, that distinction matters most in decode-time tensor parallelism,
-where allreduce messages are small and latency-sensitive. In this regime,
-inter-node collective performance is dominated less by peak bandwidth than by
-the fixed cost imposed on each step of the scaleout path.
+For decode-time tensor parallelism, that path choice matters because allreduce
+messages are small and latency-sensitive. Per-step fixed cost dominates over
+bandwidth in this regime.
 
 This chapter focuses on the software mechanism behind that fixed cost: the host
 bounce buffer. It does not estimate a node-count crossover. It confirms, from
@@ -67,23 +62,23 @@ This chapter does not attempt to cover:
 - MoE alltoall behavior
 - a benchmark-derived node-count wall
 
-For DeepSeek R1, V3, and V4 work planned on PVC, read this chapter as the
-baseline allreduce note. It covers the host-staged inter-node path used by
-oneCCL. It does not try to model MoE expert-routing traffic.
+For DeepSeek R1, V3, and V4 work planned on PVC, this chapter covers the
+host-staged inter-node allreduce path. It does not model MoE expert-routing
+traffic.
 
 The central claim is:
 
 > On PVC on Aurora, oneCCL's multi-node GPU allreduce path is host-staged on
-> scaleout by default. The HMEM bypass requires Aurora's libfabric to have been
-> compiled with `HAVE_ZE` — a build fact that must be verified, not assumed.
-> Until verified, host staging adds a fixed software latency term to every
-> inter-node step of the collective.
+> scaleout by default. The HMEM bypass (`CCL_ATL_HMEM=1`) is unverified on
+> Aurora: hardware and driver stack are capable, but whether it activates
+> depends on the deployed libfabric build and runtime configuration. Until
+> confirmed, host staging adds a fixed software latency term to every inter-node
+> step of the collective.
 
-The PVC scaling limit for small-message decode is therefore not set by lack of
-intra-node bandwidth. It is set by repeating a host-mediated inter-node path
-as node count grows. The `CCL_ATL_HMEM=1` path may be able to bypass this —
-but only if the Aurora system team confirms `HAVE_ZE` is present in the
-deployed libfabric.
+The PVC scaling limit for small-message decode is not set by lack of intra-node
+bandwidth. It is set by repeating a host-mediated inter-node path as node count
+grows. The `CCL_ATL_HMEM=1` path may be able to bypass this — but must be
+verified before relying on it (see §7).
 
 ---
 
@@ -377,9 +372,11 @@ through the shared `hmem_ops[FI_HMEM_ZE]` dispatch table and has a
 `force_ze_hmem_support` environment variable, which means ZE support was
 explicitly anticipated. No CXI-specific ZE code is needed.
 
-**The operative question is a build fact:** was the libfabric deployed on Aurora
-compiled with `HAVE_ZE` enabled? If yes, `CCL_ATL_HMEM=1` may work. If no, the
-probe fails silently and oneCCL falls back to host staging. To check:
+**The operative question is a deployment fact:** does the libfabric on Aurora
+have `FI_HMEM_ZE` enabled and working? The most likely gate is the `HAVE_ZE`
+compile flag, but driver version, kernel dmabuf support, and NIC firmware can
+also affect whether the probe succeeds. If the probe fails, oneCCL falls back
+to host staging silently. To check:
 
 ```bash
 fi_info -v -p cxi 2>/dev/null | grep -i "ze\|hmem"
@@ -403,8 +400,8 @@ dist.destroy_process_group()
 ```
 
 If `use_hmem: 1` does not appear, HMEM fell back to staging regardless of the
-flag. Until the Aurora system team confirms libfabric is built with `HAVE_ZE`,
-treat host staging as the only verified functional path.
+flag. Until the Aurora system team confirms the HMEM path is active, treat host
+staging as the only verified functional path.
 
 ---
 
@@ -416,14 +413,14 @@ activations, stages through host memory, and executes a sequential
 `D2H -> host_task(allreduce + wait) -> H2D` chain. Under OFI, that path forces
 `copy_to_host = true`.
 
-The HMEM bypass (`CCL_ATL_HMEM=1`) requires Aurora's libfabric to have been
-compiled with `HAVE_ZE`. Until that is verified, host staging is the only
-confirmed functional inter-node path.
+The HMEM bypass (`CCL_ATL_HMEM=1`) requires a compatible libfabric build and
+runtime configuration (see §7). Until verified on the target deployment, host
+staging is the only confirmed functional inter-node path.
 
-Host staging is not an incidental implementation detail on this path — it inserts
-a fixed host-mediated cost into every inter-node step, which limits scalability
-for small, latency-sensitive decode collectives even though PVC has strong
-intra-node Xe Link bandwidth.
+Host staging inserts a fixed host-mediated cost into every inter-node step.
+For small, latency-sensitive decode collectives this cost accumulates across
+steps, limiting scalability even though PVC has strong intra-node Xe Link
+bandwidth.
 
 The remaining work is to measure the workload-specific point at which that
 coefficient becomes dominant in end-to-end decode latency.
