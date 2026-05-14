@@ -2,11 +2,14 @@
 
 ## Abstract
 
-This chapter argues that oneCCL's default multi-node GPU path on Intel Ponte
-Vecchio (PVC) is limited by host-staged scaleout when HMEM is not active. The
+This chapter argues that oneCCL's multi-node GPU path on Intel Ponte Vecchio
+(PVC) on Aurora is limited by host-staged scaleout. HMEM is not a usable
+alternative: the Slingshot-11 CXI libfabric provider has no `FI_HMEM_ZE`
+backend for Intel GPU memory, making host staging the only functional
+inter-node path on Aurora today. The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
-(2) small BF16 scaleout messages typically select the `direct` scaleout path,
+(2) small BF16 scaleout messages in the decode regime always select the `direct` scaleout path,
 (3) the `topo` scaleout path stages through host buffers when HMEM is disabled,
 (4) the SYCL scaleout implementation runs a sequential
 `D2H -> host_task(allreduce+wait) -> H2D` chain, and (5) the OFI transport
@@ -69,13 +72,16 @@ oneCCL. It does not try to model MoE expert-routing traffic.
 
 The central claim is:
 
-> On PVC, oneCCL's default multi-node GPU allreduce path remains host-staged on
-> scaleout when HMEM is not active, and that host staging adds a fixed software
-> latency term to every inter-node step of the collective.
+> On PVC on Aurora, oneCCL's multi-node GPU allreduce path is host-staged on
+> scaleout — this is not the default among several options but the only
+> functional path, because the CXI provider does not support `FI_HMEM_ZE` for
+> Intel GPU memory. That host staging adds a fixed software latency term to
+> every inter-node step of the collective.
 
-If this claim is correct, then the PVC scaling limit for small-message decode is
-not set by lack of intra-node bandwidth. It is set by repeating a host-mediated
-inter-node path as node count grows.
+The PVC scaling limit for small-message decode is therefore not set by lack of
+intra-node bandwidth. It is set by repeating a host-mediated inter-node path
+as node count grows, with no software knob currently able to bypass it on
+Aurora.
 
 ---
 
@@ -138,9 +144,12 @@ else if (ccl_dtype == ccl::datatype::bfloat16) {
 
 Source: `src/coll/algorithms/utils/sycl_selection.cpp`
 
-Decode-time TP activations are far below these thresholds. A batch-1,
-`d_model = 8192`, BF16 activation is 16 KB. PVC decode therefore stays in the
-small-message regime, where fixed step cost dominates.
+For any multi-node PVC deployment at ≥2 nodes with 12 tiles/node, `comm_size`
+is ≥24, so the `comm_size > 8` branch is always active. The effective threshold
+for Aurora-scale decode is `size <= 4 MB`. A batch-1, `d_model = 8192`, BF16
+activation is 16 KB — 250× below that threshold. Decode-time TP activations
+unconditionally select `direct` within this scope, where fixed step cost
+dominates.
 
 ### 4.3 `topo` Scaleout Uses Host Buffers When HMEM Is Disabled
 
@@ -347,25 +356,35 @@ separate PVC analysis.
 
 ---
 
-## 7. HMEM Is a Separate Mode, Not the Baseline
+## 7. HMEM Is Not Available on Aurora
 
-The source also makes clear that HMEM is a gate, not the default assumption:
+The source makes clear that HMEM is gated:
 
 ```cpp
 bool enable_hmem = (ccl::global_data::env().use_hmem && atl_base_comm::attr.out.enable_hmem);
 ```
 
-For PVC papers, HMEM should be treated as a separate validated configuration.
-It changes the path. It does not redefine the baseline path.
+`atl_base_comm::attr.out.enable_hmem` is set during communicator init by probing
+the libfabric provider for `FI_HMEM` support. For Intel GPU memory, oneCCL
+registers buffers with `fi_mr_regattr(iface=FI_HMEM_ZE)` — the Intel Level Zero
+HMEM interface. The CXI provider (Slingshot-11) has no `FI_HMEM_ZE` backend:
+its `prov/cxi/src/` implements HMEM only for CUDA (`disable_dmabuf_cuda`) and
+ROCm (`disable_dmabuf_rocr`).
 
-The baseline software limitation described in this note is therefore:
+Two failure modes on Aurora:
 
-- multi-node GPU collective
-- HMEM not active
-- scaleout enters a host-staged path
+1. The CXI probe with `FI_HMEM` hints fails → `LOG_WARN` → `enable_hmem` stays
+   false → oneCCL silently continues with host staging. `CCL_ATL_HMEM=1`
+   appears to be accepted but does nothing.
 
-If a deployment validates `CCL_ATL_HMEM=1`, it deserves its own section and its
-own results because it is a different path with a different coefficient.
+2. The probe passes (CXI advertises `FI_HMEM` generically when requested), but
+   the first `fi_mr_regattr` with `iface=FI_HMEM_ZE` fails → `CCL_THROW` →
+   fatal exception at first collective.
+
+Either way, `CCL_ATL_HMEM=1` is not a usable knob on Aurora today. The baseline
+host-staged path described in this note is not a choice — it is the only
+functional path. HMEM becomes available only when the CXI provider adds an Intel
+Level Zero GPU memory backend.
 
 ---
 
@@ -373,17 +392,19 @@ own results because it is a different path with a different coefficient.
 
 The oneCCL source code supports a precise PVC claim.
 
-For SYCL+ZE GPU allreduce on PVC, the library selects `topo` for the main GPU
-path, enters a small-message `direct` scaleout path for typical decode
-activations, stages through host memory when HMEM is not active, and executes a
-sequential `D2H -> host_task(allreduce + wait) -> H2D` chain in that scaleout
-path. Under OFI, that path forces `copy_to_host = true`.
+For SYCL+ZE GPU allreduce on PVC on Aurora, the library selects `topo` for the
+main GPU path, enters a small-message `direct` scaleout path for typical decode
+activations, stages through host memory, and executes a sequential
+`D2H -> host_task(allreduce + wait) -> H2D` chain in that scaleout path. Under
+OFI, that path forces `copy_to_host = true`. The HMEM bypass is not available
+on Aurora because the CXI libfabric provider has no `FI_HMEM_ZE` backend for
+Intel GPU memory — host staging is the only functional inter-node path today.
 
-Host bounce buffering is not an incidental implementation detail. It is part of
-the selected inter-node software path for the default PVC baseline. Because that
-path inserts a fixed host-mediated cost into every inter-node step, it limits
-oneCCL scalability on PVC for small, latency-sensitive decode collectives even
-though PVC has strong intra-node Xe Link bandwidth.
+Host bounce buffering is not an incidental implementation detail. It is the
+only inter-node software path for PVC on Aurora. Because it inserts a fixed
+host-mediated cost into every inter-node step, it limits oneCCL scalability
+on PVC for small, latency-sensitive decode collectives even though PVC has
+strong intra-node Xe Link bandwidth.
 
 The remaining work for a system-specific study is to measure the workload-
 specific point at which that fixed coefficient becomes the dominant term in
@@ -400,8 +421,18 @@ end-to-end decode latency.
 - `src/coll/coll_util.cpp`
 - `src/coll/algorithms/allreduce/sycl/allreduce_scaleout_sycl.cpp`
 
-### Aurora references
+### Aurora and measurement references
 
 - Allcock et al., "Aurora: Architecting Argonne's First Exascale
     Supercomputer for Accelerated Scientific Discovery" (arXiv:2509.08207)
+  — ECB topology, PCIe Gen5 x16 GPU→CPU (64 GB/s), PCIe Gen4 NIC path (32 GB/s)
 - Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291)
+  — allreduce latency scaling data, NIC effective bandwidth, PCIe Gen4→Gen5
+    conversion overhead
+- Goto et al., "Sustaining Exascale Performance: Lessons from HPL and
+    HPL-MxP on Aurora" (arXiv:2604.09517)
+  — confirms PCIe switches fan out Gen5 x16 to Gen4 x16 for NIC-facing ports
+- Hidayetoglu et al., "CommBench: Micro-benchmarking Hierarchical Networks
+    with Multi-GPU, Multi-NIC Nodes" (ICS 2024)
+  — ~8 µs allreduce latency on Aurora with (n, 12, 12) tile configuration;
+    direct empirical support for the staged per-step coefficient in §6
