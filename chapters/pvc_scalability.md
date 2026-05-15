@@ -59,13 +59,14 @@ This chapter is limited to:
 
 This chapter does not attempt to cover:
 
-- training gradient synchronization
-- MoE alltoall behavior
+- training gradient synchronization (see [Host-Staged Collectives §6](host_staging_scaling))
+- MoE alltoall behavior (see [Host-Staged Collectives §7](host_staging_scaling))
 - a benchmark-derived node-count wall
 
 For DeepSeek R1, V3, and V4 work planned on PVC, this chapter covers the
-host-staged inter-node allreduce path. It does not model MoE expert-routing
-traffic.
+host-staged inter-node allreduce path. For training and MoE scaling at 100+
+nodes, the throughput/congestion analysis in [Host-Staged Collectives](host_staging_scaling)
+§6-7 is more relevant than the decode model here.
 
 The central claim is:
 

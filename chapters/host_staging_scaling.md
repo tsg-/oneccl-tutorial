@@ -4,25 +4,38 @@
 
 Intel Xe GPU architectures (PVC, BMG/CRI) require all inter-node collective
 communication to pass through host DRAM by default. This "host bounce buffer"
-design imposes a fixed per-step latency penalty that compounds across every
-step of a distributed collective algorithm. For latency-sensitive workloads
-(decode inference), the alpha-beta model derived in §3 estimates that the
-compounded penalty exceeds per-layer compute time somewhere in the 8–16 node
-range — beyond which adding nodes reduces compute time faster than it reduces
-per-token communication cost. The bounce buffer cost comes from the software
-data path, not from network bandwidth, so it cannot be removed by algorithm
-selection alone without changing how data reaches the NIC. This chapter traces
-the mechanism through oneCCL source code, derives the scaling behavior
-quantitatively, and identifies the conditions under which the wall appears.
+design causes two distinct scaling failure modes:
+
+1. **Latency accumulation (small messages, 8–16 nodes).** For decode-time
+   tensor parallelism, where messages are small and latency-critical, the
+   per-step host-staging overhead compounds across collective algorithm steps.
+   The alpha-beta model in §5 estimates that this overhead exceeds per-layer
+   compute time in the 8–16 node range for batch-1 decode.
+
+2. **Throughput/congestion saturation (large messages, 1000+ nodes).** For
+   training gradient allreduce and MoE alltoallv at scale, the symptom is
+   different: simultaneous D2H and H2D staging from many tiles saturates local
+   PCIe bandwidth and host DRAM throughput, capping effective collective
+   bandwidth below what the network fabric can deliver (§6–7).
+
+Both modes share the same root cause — data transits host memory on every
+inter-node step — but manifest at different scales and message sizes. The
+bounce buffer cost comes from the software data path, not from network
+bandwidth, so it cannot be removed by algorithm selection alone without
+changing how data reaches the NIC. This chapter traces the mechanism through
+oneCCL source code, derives the scaling behavior for both regimes, and
+identifies deployment conditions under which each becomes dominant.
 
 **Reader map:**
-- §1-2: Mechanism — what host staging is and how the D2H→allreduce→H2D chain works in oneCCL source
-- §2.1: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
-- §3-5: Scaling model — alpha-beta derivation, bottlenecks, crossover estimate (8-16 nodes for decode)
-- §6: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
-- §7: MoE — alltoallv scaling under host staging
-- §8-9: Evidence and comparison — Aurora measurements, GPUDirect RDMA contrast
+- §1-2: Mechanism — the D2H→allreduce→H2D chain, HMEM bypass, per-step latency model
+- §3-5: Decode scaling — alpha-beta derivation, bottlenecks, 8-16 node crossover for TP
+- §6: Training at scale — gradient bandwidth saturation, ZeRO, PCIe throughput limits
+- §7: MoE at scale — alltoallv congestion from simultaneous staging across tiles
+- §8-9: Evidence — Aurora measurements, GPUDirect RDMA contrast
 - §10: Deployment guidance — runtime configuration, HMEM activation, mitigation limits
+
+**If you are debugging large-scale training or MoE (100+ nodes),** start at §6-7.
+The decode model in §3-5 is for small-message TP; the mechanism in §2 applies to both.
 
 ---
 
@@ -30,30 +43,27 @@ quantitatively, and identifies the conditions under which the wall appears.
 
 oneCCL is Intel's collective communication library. It implements allreduce,
 broadcast, all-to-all, and other operations that are on the critical path of
-distributed training and inference. In a transformer model sharded across N
-GPUs via tensor parallelism, every attention and MLP layer ends with an allreduce
-that sums partial results across all ranks and returns the total to each. The
-latency of this allreduce subtracts from the time budget for each generated token.
+distributed training and inference. The host-staging mechanism described in §2
+applies to all inter-node collectives regardless of message size or node count.
+Its scaling consequences differ by workload regime:
 
-The time to execute one allreduce has two components:
+- **Tensor parallelism (8–64 tiles, small messages):** Each TP allreduce is
+  latency-critical. Host staging adds a fixed per-step cost that dominates the
+  message transfer time. §3-5 model this regime.
+- **Data parallelism / ZeRO (100–10,000+ nodes, large messages):** Gradient
+  allreduce is bandwidth-critical. Host staging forces all data through the
+  node's PCIe/host DRAM path, capping effective throughput below network
+  capacity. §6 models this regime.
+- **MoE expert parallelism (10–1000+ nodes, medium messages, all-to-all):**
+  Every tile simultaneously stages data for every other tile. The N×N traffic
+  pattern concentrates all staging on the same PCIe root complexes. §7 models
+  this regime.
 
-```
-T_allreduce = T_compute_local + T_communication
-```
-
-`T_compute_local` scales inversely with the number of ranks (more ranks, less
-work per rank). `T_communication` does not improve — it worsens, because more
-ranks means more steps in any collective algorithm. Scaling efficiency is:
-
-```
-E(N) = T_serial / (N * T_parallel(N))
-```
-
-When `T_communication` grows faster than `T_compute_local` shrinks, efficiency
-degrades. The node count at which `T_communication >= T_compute_local` is the
-practical scaling wall. For Intel Xe GPUs, the host bounce buffer inflates
-`T_communication` by 3-5x per step relative to a GPU RDMA path; §3 and §5
-derive the implied scaling crossover for a representative decode workload.
+The common mechanism is a sequential D2H→collective→H2D chain that every
+inter-node message traverses by default. For small messages, the symptom is
+per-step latency accumulation. For large messages at scale, the symptom is
+PCIe and host DRAM bandwidth saturation. Both map to the same code path in
+oneCCL (§2).
 
 ---
 
