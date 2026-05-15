@@ -108,16 +108,16 @@ workload as a subprocess, so you can run it from a single-rank kernel and still 
 ## Architecture Boundary: oneCCL vs NIXL
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Inference Workload                    │
-├──────────────────────┬──────────────────────────────────┤
-│     oneCCL (BMG/CRI)     │           NIXL / UCX             │
-│                      │                                  │
-│  TP Allreduce        │  KV cache P→D transfer           │
-│  MoE Alltoall        │  Disaggregated routing           │
-│  SP Allgather        │  Large directed P2P              │
-│  (synchronization)   │  (data movement)                 │
-└──────────────────────┴──────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│                Inference Workload               │
+├──────────────────────┬──────────────────────────┤
+│  oneCCL (BMG/CRI)    │  NIXL / UCX              │
+│                      │                          │
+│  TP Allreduce        │  KV cache P→D transfer   │
+│  MoE Alltoall        │  Disaggregated routing   │
+│  SP Allgather        │  Large directed P2P      │
+│  (synchronization)   │  (data movement)         │
+└──────────────────────┴──────────────────────────┘
 ```
 
 oneCCL owns **synchronization primitives** across TP/EP ranks.

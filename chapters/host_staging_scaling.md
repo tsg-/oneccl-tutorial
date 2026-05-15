@@ -17,12 +17,12 @@ quantitatively, and identifies the conditions under which the wall appears.
 
 **Reader map:**
 - §1-2: Mechanism — what host staging is and how the D2H→allreduce→H2D chain works in oneCCL source
-- §3: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
-- §4-5: Scaling model — alpha-beta derivation, crossover estimate (8-16 nodes for decode)
-- §6: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
-- §7: MoE — alltoallv scaling under host staging
-- §8: Aurora evidence — Ibeid et al. measurements, consistency with the model
-- §9: Mitigation — HMEM activation, CXI direct, UALink roadmap
+- §2.0: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
+- §3-5: Scaling model — alpha-beta derivation, bottlenecks, crossover estimate (8-16 nodes for decode)
+- §5b: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
+- §5c: MoE — alltoallv scaling under host staging
+- §6-7: Evidence and comparison — Aurora measurements, GPUDirect RDMA contrast
+- §8: Mitigation — HMEM activation, CXI direct, UALink roadmap
 
 ---
 
