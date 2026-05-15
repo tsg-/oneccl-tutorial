@@ -404,7 +404,7 @@ With HMEM enabled:
 
 This subsection is for readers who want to understand what happens at the
 libfabric and kernel level. It's not required for deployment; skip to
-[No Hardware-Specific Gating](#no-hardware-specific-gating) if you just want
+[No Hardware-Specific Gating](no-hardware-specific-gating) if you just want
 to know whether BMG/CRI supports HMEM.
 
 The mechanism in oneCCL (from `src/atl/ofi/atl_ofi.cpp`):

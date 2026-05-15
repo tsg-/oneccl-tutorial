@@ -7,15 +7,15 @@ BMG/CRI hardware today.
 If you have not read [Foundations](00_foundations) yet, read §3 (what the collectives do) and
 §4 (algorithms) first.
 
-| If you need... | Jump to |
-|---|---|
-| TP / decode inference | [Decision Framework](#decision-framework) |
-| MoE expert routing | [Alltoallv — MoE Expert Routing](#alltoallv--moe-expert-routing) |
-| Training (DDP, ZeRO, PP) | [Training Workloads](#training-workloads) |
-| Anti-patterns / common mistakes | [Anti-Patterns](#anti-patterns) |
+**Jump to:**
+- TP / decode inference → [Decision Framework](decision-framework)
+- MoE expert routing → [Alltoallv — MoE Expert Routing](alltoallv-moe-expert-routing)
+- Training (DDP, ZeRO, PP) → [Training Workloads](training-workloads)
+- Anti-patterns / common mistakes → [Anti-Patterns](anti-patterns)
 
 ---
 
+(decision-framework)=
 ## Decision Framework
 
 Before calling any collective, answer these five questions. The answers determine everything.
@@ -115,6 +115,7 @@ the reduction with local compute.
 
 ---
 
+(alltoallv-moe-expert-routing)=
 ## The "v" Variants: When to Use alltoallv and allgatherv
 
 The base variants (`alltoall`, `allgather`) require all ranks to send/receive the same count.
@@ -183,6 +184,7 @@ scaleout phase, which supports variable-length messages natively.
 
 ---
 
+(anti-patterns)=
 ## Anti-Patterns: When Collectives Are Wrong
 
 These situations are commonly mishandled:
