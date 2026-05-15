@@ -21,6 +21,30 @@ are bandwidth-bound where inference decode is latency-bound. Jump to
 [When to Use Which Collective §Training](chapters/03_when_to_use) for the training-specific
 decision tree and ZeRO pattern guide.
 
+## How to Navigate This Tutorial
+
+Use this page as the map. The tutorial has three layers:
+
+| If you want to... | Start here | Then read |
+|---|---|---|
+| Learn the concepts from first principles | [Foundations](chapters/00_foundations) | [oneCCL Overview](chapters/01_overview), [Topology](chapters/02_topology) |
+| Decide which collective belongs in a workload | [When to Use Which Collective](chapters/03_when_to_use) | [The oneCCL / NIXL Boundary](chapters/nixl_boundary) |
+| Run the examples | [Environment Setup](notebooks/02_environment_setup) | [Allreduce](notebooks/03a_allreduce_walkthrough), [Allgather](notebooks/03b_allgather), [Alltoall](notebooks/03c_alltoall_moe), then [TP Decode](notebooks/04_inference_tp_decode) |
+| Tune or debug a deployment | [Performance Tuning Reference](chapters/perf_tuning) | [Debugging and Profiling](chapters/debugging_profiling) |
+| Understand host-staged scaleout on PVC/Aurora | [PVC: Host-Staged Scaleout](chapters/pvc_scalability) | [Host Staging: The Scaling Wall](chapters/host_staging_scaling) |
+| Integrate oneCCL from C++ / SYCL | [Native C++ / SYCL Integration](chapters/native_cpp_api) | [Performance Tuning Reference](chapters/perf_tuning) |
+
+The main path is:
+
+```text
+Foundations -> oneCCL Overview -> Topology -> Hardware Constraints
+			-> When to Use Which Collective -> Environment Setup
+			-> Allreduce -> Allgather -> Alltoall -> End-to-End TP Decode
+```
+
+The reference chapters are intentionally more detailed. Read them when you need a specific
+answer about tuning, profiling, native C++ integration, or PVC/Aurora scaleout behavior.
+
 ## Scope
 
 - What collective communication is and why it exists (ranks, allreduce, ring algorithm)

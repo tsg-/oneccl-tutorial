@@ -205,25 +205,29 @@ export I_MPI_SHM=1
 
 ---
 
-## Complete Production Launch Template
+## Launch Templates
+
+### Decode Inference (latency-critical)
 
 ```bash
 #!/bin/bash
 # Decode inference: 8 GPUs, 2 sockets × 4 GPUs/socket, batch=1
+# Priority: minimize per-token latency. Messages are small (16 KB–256 KB).
 
 # Transport
 export CCL_ATL_TRANSPORT=ofi
 export I_MPI_FABRICS=shm:ofi
 
 # Algorithm: leave CCL_ALLREDUCE unset — topo (default) handles GPU scale-up.
-# Control scaleout phase only (relevant for multi-node):
-export CCL_ALLREDUCE_SCALEOUT=ring
-export CCL_ALLGATHER_SCALEOUT=ring
+# For decode's small messages, the auto selector picks `direct` scaleout,
+# which delegates to MPI's native algorithm (typically latency-optimal for this regime).
+# Override only if benchmarking shows a specific algorithm wins:
+# export CCL_ALLREDUCE_SCALEOUT=direct
 
 # Workers: 1 per rank for GPU buffers
 export CCL_WORKER_COUNT=1
 
-# Priority: LIFO for decode hot path
+# Priority: LIFO — deprioritize stale collective handles
 export CCL_PRIORITY=lifo
 
 # Logging: minimal in production
@@ -236,16 +240,38 @@ export I_MPI_PIN_ORDER=compact
 mpirun -n 8 -ppn 8 python decode_server.py
 ```
 
----
+### Prefill / Training (bandwidth-critical)
 
-## Complete Debug/Profiling Launch Template
+```bash
+#!/bin/bash
+# Prefill or training: 8 GPUs, large messages (MB–GB scale).
+# Priority: maximize bandwidth utilization on ring.
+
+export CCL_ATL_TRANSPORT=ofi
+export I_MPI_FABRICS=shm:ofi
+
+# Ring is bandwidth-optimal for large messages. At GB-scale gradient traffic,
+# the 512 KB crossover from Foundations §7 is irrelevant.
+export CCL_ALLREDUCE_SCALEOUT=ring
+export CCL_ALLGATHER_SCALEOUT=ring
+export CCL_REDUCE_SCATTER_SCALEOUT=ring
+
+export CCL_WORKER_COUNT=1
+export CCL_LOG_LEVEL=warn
+
+export I_MPI_PIN_DOMAIN=socket
+export I_MPI_PIN_ORDER=compact
+
+mpirun -n 8 -ppn 8 python train.py
+```
+
+### Debug / Profiling
 
 ```bash
 #!/bin/bash
 # Use this when diagnosing performance issues
 
 export CCL_ATL_TRANSPORT=ofi
-export CCL_ALLREDUCE_SCALEOUT=ring
 export CCL_WORKER_COUNT=1
 export I_MPI_PIN_DOMAIN=socket
 export I_MPI_FABRICS=shm:ofi

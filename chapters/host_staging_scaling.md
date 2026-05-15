@@ -15,6 +15,15 @@ selection alone without changing how data reaches the NIC. This chapter traces
 the mechanism through oneCCL source code, derives the scaling behavior
 quantitatively, and identifies the conditions under which the wall appears.
 
+**Reader map:**
+- §1-2: Mechanism — what host staging is and how the D2H→allreduce→H2D chain works in oneCCL source
+- §3: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
+- §4-5: Scaling model — alpha-beta derivation, crossover estimate (8-16 nodes for decode)
+- §6: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
+- §7: MoE — alltoallv scaling under host staging
+- §8: Aurora evidence — Ibeid et al. measurements, consistency with the model
+- §9: Mitigation — HMEM activation, CXI direct, UALink roadmap
+
 ---
 
 ## 1. Background: What Collectives Require of the Hardware
@@ -1249,7 +1258,7 @@ on the target model and node count.
   lines 29-100 (sequential D2H/allreduce/H2D pipeline),
   lines 116-121 (OFI forces copy_to_host=true),
   line 33 (TODO: chunking/pipelining),
-  line 66 (ep_idx=0 serialization)
+  line 66 (ep_idx=0 — fixed endpoint index, scope unclear)
 - `src/coll/coll_util.cpp`: scaleout path, enable_hmem gate, host buffer allocation
 - `src/coll/selection/selector_allreduce.cpp`: algorithm selection by message size
 - `src/coll/selection/selector.hpp`: CCL_ALLREDUCE_SHORT_MSG_SIZE=8192,

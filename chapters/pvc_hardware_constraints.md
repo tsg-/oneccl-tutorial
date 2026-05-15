@@ -156,10 +156,24 @@ to host memory and run a CPU-side algorithm, losing even the PCIe P2P scale-up p
 
 ---
 
+## Quick Deployment Takeaways
+
+If you are configuring a deployment and not debugging HMEM internals:
+
+1. Leave `CCL_ALLREDUCE` unset (defaults to `topo`). Setting it to anything else drops to host-staged CPU algorithms.
+2. Inter-node traffic is host-staged by default on both PVC and BMG/CRI. This is the current verified baseline.
+3. `CCL_ATL_HMEM=1` can bypass host staging if the libfabric build supports `FI_HMEM_ZE` — verify before relying on it (see [Host Staging §3](host_staging_scaling)).
+4. For decode (small messages): leave scaleout algorithm on `auto`/`direct`. For training (large messages): set `CCL_ALLREDUCE_SCALEOUT=ring`.
+5. Pin ranks to sockets (`I_MPI_PIN_DOMAIN=socket`) to keep intra-node ring steps on-socket.
+
+The sections below explain the hardware constraints behind these recommendations.
+
+---
+
 ## Scaleout Limitation: Host Staging Is the Default
 
-Both PVC and BMG/CRI **always host-stage inter-node traffic by default** — this is the
-scalability wall in production.
+Both PVC and BMG/CRI host-stage inter-node traffic by default. This is the
+per-step overhead described in [Host Staging](host_staging_scaling).
 
 OFI (OpenFabrics Interfaces) is the network transport that oneCCL uses for
 inter-node communication — it's the layer between oneCCL and the physical NIC
@@ -441,6 +455,7 @@ HMEM Registration and Transfer Flow:
 oneCCL never passes dmabuf file descriptors directly. The dmabuf mechanism is
 abstracted behind libfabric's `FI_HMEM` API.
 
+(no-hardware-specific-gating)=
 ### No Hardware-Specific Gating
 
 HMEM has **no device-family restrictions** in oneCCL. It is purely a

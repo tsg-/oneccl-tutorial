@@ -7,9 +7,12 @@ BMG/CRI hardware today.
 If you have not read [Foundations](00_foundations) yet, read §3 (what the collectives do) and
 §4 (algorithms) first.
 
-**Navigation:** Jump directly to [Training Workloads](#training-workloads) if you are here
-for training (DDP, ZeRO, pipeline parallelism). The inference sections are first; the
-training decision tree, ZeRO comparison, and training anti-patterns are at the bottom.
+| If you need... | Jump to |
+|---|---|
+| TP / decode inference | [Decision Framework](#decision-framework) |
+| MoE expert routing | [Alltoallv — MoE Expert Routing](#alltoallv--moe-expert-routing) |
+| Training (DDP, ZeRO, PP) | [Training Workloads](#training-workloads) |
+| Anti-patterns / common mistakes | [Anti-Patterns](#anti-patterns) |
 
 ---
 
@@ -228,6 +231,7 @@ correctness test before deploying.
 
 ---
 
+(training-workloads)=
 ## Training Workloads
 
 Training uses the same collectives as inference but in different configurations. The main
@@ -246,7 +250,7 @@ What are you synchronizing?
 │       Every GPU computed gradients on its batch shard. Sum to get full-dataset gradient.
 │       Size: (model params) × bytes/param
 │       7B model (BF16): 14 GB total — partitioned by layer, streamed with backward pass
-│       Algorithm: Ring (always bandwidth-bound)
+│       Algorithm: Ring (bandwidth-bound at this size)
 │       ZeRO-1 note: gradient communication is unchanged (still Allreduce); ZeRO-1 only
 │             shards optimizer state, which is local CPU work after the Allreduce completes
 │
@@ -287,7 +291,7 @@ What are you synchronizing?
 ├── Model weight broadcast at startup / checkpoint restore
 │   └── → Broadcast
 │       Rank 0 loads checkpoint, broadcasts to all other ranks.
-│       Only at startup — never in training hot path.
+│       Only at startup — not in the training hot path.
 │       Size: full model (GB-scale). Algorithm: Van de Geijn (scatter+allgather ring)
 │
 └── Gradient norm computation (for gradient clipping)

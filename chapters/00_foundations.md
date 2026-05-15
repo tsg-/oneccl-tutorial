@@ -4,6 +4,13 @@ This chapter builds everything from scratch — why collectives exist, how the a
 work mathematically, and what drives algorithm selection on real hardware. The formulas
 and thresholds in §4 and §6 come directly from the primary literature, not approximations.
 
+**Use this chapter for:**
+- §1-3: What collectives do and when each applies (allreduce, reduce-scatter, allgather, alltoall)
+- §4: The alpha-beta latency model — how to estimate collective cost from message size and step count
+- §5-6: Algorithm families (ring, recursive doubling, rabenseifner, tree) and Open MPI's catalog
+- §7: Message-size thresholds that drive algorithm selection in practice
+- §8: How oneCCL's `CCL_*` variables map to the algorithms above
+
 ---
 
 ## 1. Inter-Process Communication in Distributed Inference

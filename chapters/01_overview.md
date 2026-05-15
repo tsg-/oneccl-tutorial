@@ -195,7 +195,7 @@ the right choice at training message sizes (GB-scale, bandwidth-bound). The 512 
 | `CCL_WORKER_COUNT` | oneCCL worker threads per process | `1` for inference (latency-bound); `1–2` for training |
 | `CCL_LOG_LEVEL` | `error`, `warn`, `info`, `debug` | `warn` in prod; `info` to diagnose algorithm selection |
 | `CCL_ALLREDUCE` | Main allreduce algorithm. Default `topo` for SYCL+ZE GPU builds. **Setting a value other than `topo` can force fallback behavior and may stage GPU buffers through host memory.** For GPU workloads, control only the scaleout phase via `CCL_ALLREDUCE_SCALEOUT` instead. | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
-| `CCL_ALLREDUCE_SCALEOUT` | Algorithm for inter-node phase only. `ring` is bandwidth-optimal and correct for both inference and training. | `ring` |
+| `CCL_ALLREDUCE_SCALEOUT` | Algorithm for inter-node phase only. `ring` for large messages (prefill/training); leave `auto` for decode (small messages use `direct`). | `ring` for BW-bound; leave default for latency-bound |
 | `CCL_PRIORITY` | Task priority mode | `lifo` for low-latency inference |
 | `I_MPI_PIN_DOMAIN` | MPI rank-to-core pinning | `socket` — match NUMA domains for both inference and training |
 | `I_MPI_FABRICS` | `shm:ofi`, `ofi`, `tcp` | `shm:ofi` |

@@ -2,8 +2,9 @@
 
 The notebooks in this tutorial use `torch.distributed` with the CCL backend — the Python
 path that most inference and training engineers reach first. This chapter covers the **native
-C++ API** directly, which is what you need when:
+C++ API** directly.
 
+**Use the native API when:**
 - Building a C++ inference engine (vLLM-style engine written in C++ / SYCL)
 - Embedding oneCCL into an existing SYCL compute pipeline without a PyTorch dependency
 - Benchmarking without Python overhead
