@@ -635,7 +635,7 @@ correct. oneCCL calibrates its auto thresholds for Intel hardware via its intern
 > algorithm. oneCCL maintains distinct **main**, **scaleout**, and **fallback** selector
 > tables for allreduce; those tables should not be conflated when reasoning about the
 > effective path for a given workload. The platform-specific behavior of `topo`, scaleout,
-> and fallback is traced in the [Host Staging: The Scaling Wall](host_staging_scaling)
+> and fallback is traced in the [Host-Staged Collectives](host_staging_scaling)
 > chapter rather than repeated here.
 
 **Latency-bound vs. bandwidth-bound — the rule of thumb:**
@@ -679,7 +679,7 @@ For TP decode (hidden=8192, BF16 → 16 KB message), the message falls below all
 crossover thresholds in the table above. The α-β model favors recursive doubling (fewer
 steps), but NUMA topology introduces unequal link costs that the symmetric α-β model
 does not capture. The interaction between NUMA topology and algorithm selection on
-BMG/CRI is hardware-specific; see the [Host Staging: The Scaling Wall](host_staging_scaling)
+BMG/CRI is hardware-specific; see the [Host-Staged Collectives](host_staging_scaling)
 chapter for a platform-grounded analysis.
 
 **Next:** [oneCCL Overview](01_overview) — the oneCCL API surface and where it fits in the stack.
