@@ -36,7 +36,7 @@ Before calling any collective, answer these five questions. The answers determin
    (These are the measured MPICH crossover thresholds: Thakur & Gropp 2003/2005.
     See Foundations §6 for the exact per-collective breakdown.)
    Note for training: all gradient collectives are far above this threshold
-   (GB-scale messages). Ring is always correct for training; skip this question.
+   (GB-scale messages). Ring is usually appropriate for training; skip this question.
 
 5. Does the result need to be on every rank, or can ranks hold different shards?
    └── Everyone needs full result → allreduce (not reduce-scatter)
@@ -128,7 +128,7 @@ input_split_sizes  = [n_tokens_from_rank_j for j in range(world_size)] # what I 
 dist.all_to_all_single(output, input, output_split_sizes, input_split_sizes)
 ```
 
-**MoE inference should use alltoallv, not alltoall.** Token routing is never perfectly balanced. If you
+**MoE inference should use alltoallv, not alltoall.** Token routing is rarely perfectly balanced. If you
 use the fixed-size `alltoall` with imbalanced routing, you waste bandwidth on padding.
 
 ### Worked Example: MoE Buffer Sizing
@@ -345,8 +345,9 @@ on the opposite side of all of them:
 | ZeRO-3 Allgather (training) | one layer / N_ranks | **100 MB–1 GB** — BW-bound | Ring |
 | DP Allreduce (training, DDP) | 7B model BF16 | **14 GB total** (streamed per layer) | Ring |
 
-**For training on BMG/CRI:** ring is always correct. The 512 KB threshold from Foundations §7
-is irrelevant — training collective messages are 3-4 orders of magnitude larger. The
+**For training on BMG/CRI:** ring is usually appropriate for large gradient traffic. The 512 KB
+threshold from Foundations §7 is irrelevant — training collective messages are 3-4 orders of
+magnitude larger. The
 important configuration is ensuring `CCL_ALLREDUCE_SCALEOUT=ring` and that NUMA pinning
 is correct so intra-node ring steps stay on-socket.
 

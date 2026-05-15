@@ -36,7 +36,7 @@ dist.init_process_group(backend="ccl") # already read env
 | `CCL_ATL_TRANSPORT` | `ofi`, `mpi` | `mpi` | **`ofi`** — lower overhead, no PMI roundtrip per collective |
 
 `ofi` uses libfabric directly. `mpi` goes through Intel MPI's collective layer, adding
-PMI synchronization overhead. For inference (latency-critical), `ofi` is strictly better
+PMI synchronization overhead. For the inference path, `ofi` is usually lower overhead
 once the MPI environment is initialized.
 
 ```bash
@@ -87,7 +87,7 @@ GPU-native scale-up path, use the `_SCALEOUT` variants:
 
 | Variable | Values | Default | Recommendation |
 |---|---|---|---|
-| `CCL_ALLREDUCE_SCALEOUT` | `ring`, `rabenseifner`, `nreduce`, `double_tree`, `direct` | `ring` | `ring` on NUMA-only |
+| `CCL_ALLREDUCE_SCALEOUT` | `ring`, `rabenseifner`, `nreduce`, `double_tree`, `direct` | `ring` | `ring` for large messages (prefill/training); leave default for decode |
 | `CCL_ALLGATHER_SCALEOUT` | `ring`, `naive`, `flat`, `multi_bcast`, `direct` | `ring` | `ring` |
 | `CCL_ALLTOALL_SCALEOUT` | `naive`, `scatter` | `scatter` | Leave default |
 | `CCL_REDUCE_SCATTER_SCALEOUT` | `ring`, `naive`, `direct` | `naive` | `ring` for large messages |

@@ -56,10 +56,11 @@ When your code calls `dist.all_reduce(tensor, op=ReduceOp.SUM)`:
    - World size and topology (detected at init)
    - `CCL_ALLREDUCE` environment override (if set)
    
-   For GPU buffers with no override → selects `topo`.
+   For GPU buffers on a SYCL+ZE build with no override → selects `topo`.
 
 3. **Schedule construction**: The selected algorithm builds a **schedule** — a directed
-   acyclic graph of **entries** (atomic operations). For `topo` allreduce:
+   acyclic graph of **entries** (atomic operations). Conceptual example for a multi-node
+   `topo` allreduce (actual entries depend on topology and message size):
    ```
    Entry 1: reduce_scatter via Level Zero IPC (intra-node, scale-up)
    Entry 2: copy result to host staging buffer (PCIe DMA)
@@ -179,8 +180,8 @@ The wall appears when gradient traffic saturates the PCIe/NIC bandwidth budget
 before compute hides it.
 ```
 
-For training: use `CCL_ALLREDUCE_SCALEOUT=ring` (the default). Ring is always
-bandwidth-optimal at training message sizes. The 512 KB crossover threshold from
+For training: use `CCL_ALLREDUCE_SCALEOUT=ring` (the default). Ring is usually
+the right choice at training message sizes (GB-scale, bandwidth-bound). The 512 KB crossover threshold from
 [Foundations §7](00_foundations) is irrelevant for training — gradient messages are
 3–4 orders of magnitude larger.
 
@@ -193,7 +194,7 @@ bandwidth-optimal at training message sizes. The 512 KB crossover threshold from
 | `CCL_ATL_TRANSPORT` | `mpi` or `ofi` | `ofi` (lower overhead for both inference and training) |
 | `CCL_WORKER_COUNT` | oneCCL worker threads per process | `1` for inference (latency-bound); `1–2` for training |
 | `CCL_LOG_LEVEL` | `error`, `warn`, `info`, `debug` | `warn` in prod; `info` to diagnose algorithm selection |
-| `CCL_ALLREDUCE` | Main allreduce algorithm. Default `topo` for GPU builds. **Setting any value other than `topo` forces GPU data through a host-staged CPU path.** For GPU workloads (inference or training), control only the scaleout phase via `CCL_ALLREDUCE_SCALEOUT` instead. | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
+| `CCL_ALLREDUCE` | Main allreduce algorithm. Default `topo` for SYCL+ZE GPU builds. **Setting a value other than `topo` can force fallback behavior and may stage GPU buffers through host memory.** For GPU workloads, control only the scaleout phase via `CCL_ALLREDUCE_SCALEOUT` instead. | Leave unset for GPU buffers (see [Perf Tuning](perf_tuning)) |
 | `CCL_ALLREDUCE_SCALEOUT` | Algorithm for inter-node phase only. `ring` is bandwidth-optimal and correct for both inference and training. | `ring` |
 | `CCL_PRIORITY` | Task priority mode | `lifo` for low-latency inference |
 | `I_MPI_PIN_DOMAIN` | MPI rank-to-core pinning | `socket` — match NUMA domains for both inference and training |
@@ -230,7 +231,7 @@ The two libraries optimize different things: NCCL optimizes kernel fusion and NV
 scheduling; oneCCL optimizes copy engine utilization, host staging pipeline depth, and
 NUMA-aware ring construction.
 
-For Intel XPU inference: **oneCCL is the only production-grade option.**
+For Intel XPU inference: **oneCCL is the primary supported collective path.**
 
 **Next:** [Topology and Algorithm Selection](02_topology) — why ring construction order
 matters on NUMA hardware and how oneCCL builds topology-aware rings automatically.

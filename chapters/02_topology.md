@@ -1,6 +1,6 @@
 # Topology and Algorithm Selection
 
-## BMG/CRI Hardware Reality: NUMA-Only
+## BMG/CRI NUMA-Only Topology
 
 BMG/CRI inference nodes use **NUMA-only intra-node topology** -- no UALink, no XeLink fabric.
 It shapes every algorithm choice in this chapter.
@@ -16,7 +16,7 @@ Socket 0 (NUMA 0)          Socket 1 (NUMA 1)
 └──────────────────┘        └──────────────────┘
 ```
 
-Every GPU-to-GPU transfer crosses PCIe and potentially UPI. There is no direct peer path.
+Every GPU-to-GPU transfer crosses PCIe and potentially UPI. There is no direct GPU fabric path.
 
 ### PCIe Gen5 Bandwidth Budget
 
@@ -64,8 +64,8 @@ to host-staged copy (GPU → host buffer → GPU), adding ~2-5 µs and halving b
 
 > **Under the hood:** P2P probing is in `src/topology/topo_manager.cpp`. The connectivity
 > result appears in `CCL_LOG_LEVEL=info` output as `topo_manager: p2p access: GPU0<->GPU1 OK`
-> or `FAILED`. A single failed pair causes the entire intra-node scale-up phase to fall back
-> to host staging — not just the pair that failed.
+> or `FAILED`. In observed behavior, a single failed pair can cause the entire intra-node
+> scale-up phase to fall back to host staging — not just the pair that failed.
 
 Verify P2P connectivity:
 ```bash
@@ -93,7 +93,7 @@ Under NUMA:
 - Cross-socket messages compete for UPI bandwidth (~64-100 GB/s shared)
 
 **At N=8, One-Shot under NUMA is not 1-step -- it serializes on PCIe.**
-Ring Allreduce with topology-aware construction is the correct algorithm here.
+Ring Allreduce with topology-aware construction is the preferred baseline on this topology.
 
 ## Topology-Aware Ring Construction
 

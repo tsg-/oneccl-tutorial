@@ -538,7 +538,7 @@ disciplined one-send/one-receive at any moment, uses the single-ported interface
 ## 6. Open MPI Algorithm Catalog
 
 Open MPI's `coll_tuned` component implements the full set of algorithms described above.
-This table gives you the complete algorithm space that NCCL, RCCL, and oneCCL all draw from:
+These are the common collective algorithm families that NCCL, RCCL, and oneCCL also implement:
 
 > **Source:** Open MPI v5.0.x Documentation, *Tuning Collectives*, §11.10.
 > [docs.open-mpi.org/en/v5.0.x/tuning-apps/coll-tuned.html](https://docs.open-mpi.org/en/v5.0.x/tuning-apps/coll-tuned.html)
@@ -603,7 +603,8 @@ controls. Use algorithm names, not IDs, when setting `CCL_ALLREDUCE` or
 ## 7. Message Size Regimes and Algorithm Selection
 
 All real collective libraries use message size to select algorithms. The crossover points
-from Thakur & Gropp (2003) are the canonical reference, now directly applicable:
+from Thakur & Gropp (2003) are a useful baseline; modern libraries retune thresholds for
+their target hardware:
 
 | Collective | Short-message algorithm | Threshold | Long-message algorithm |
 |---|---|---|---|

@@ -179,7 +179,7 @@ ccl_q:                  ░░░ AR N ░░░░        ░░░ AR N+1 ░�
               GEMM N+1 starts after AR N done (depends_on)
 ```
 
-The GPU is never idle: while AR N runs on `ccl_q`, GEMM N+1 can start on `compute_q` only
+In the ideal overlap case, the GPU stays busy: while AR N runs on `ccl_q`, GEMM N+1 can start on `compute_q` only
 if you have work that doesn't depend on the allreduce result (e.g., the QK projection of the
 next layer doesn't need the FFN output of this layer). For strict layer-sequential workloads,
 the overlap opportunity is smaller — the next layer's GEMM depends on the allreduce output.
@@ -293,5 +293,5 @@ The C++ v1 API differs from the v2 C API in:
 
 The Python wrapper goes through `oneccl_bindings_for_pytorch` →
 `ProcessGroupCCL::allreduce()` → the v1 C++ API → the same algorithm selector and schedule
-builder that the native API reaches. There is no performance penalty from using the Python
-wrapper — the hot path is the same C++ schedule execution regardless of entry point.
+builder that the native API reaches. The collective hot path is the same C++ schedule execution regardless of entry point —
+Python dispatch overhead is not on the critical path once the collective is posted.

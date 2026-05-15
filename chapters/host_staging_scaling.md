@@ -55,7 +55,7 @@ accessible from GPU-side code. Data must bounce through host DRAM on both
 the send and receive sides:
 
 ```
-Default path: OFI transport, no HMEM (production)
+Default path: OFI transport, no HMEM
 
   Node A                                               Node B
   ┌───────────┐                                       ┌───────────┐
@@ -93,7 +93,7 @@ Experimental path: OFI + CCL_ATL_HMEM=1
   Total: ~4 us per step.
 ```
 
-All inter-node communication follows this sequence
+On the non-HMEM path, all inter-node communication follows this sequence
 (from `allreduce_scaleout_sycl.cpp`, lines 29-100):
 
 ```
@@ -615,8 +615,8 @@ At N=16, communication exceeds compute per layer. Adding more nodes
 reduces T_compute further but T_comm continues growing — diminishing returns
 set in sharply.
 
-This yields N* ≈ 8-16 nodes. Beyond this, allreduce dominates the per-token
-budget.
+Under these assumptions, N* ≈ 8-16 nodes. Beyond this, allreduce dominates the
+per-token budget in the model.
 
 ### Concrete Example: Llama-3 70B, TP=8 tiles/node, Batch=1 Decode
 
@@ -958,7 +958,8 @@ The MoE wall appears earlier (4-8 nodes vs 16 nodes) because all-to-all's
 simultaneous traffic pattern saturates the PCIe root complex at lower node
 counts. Both walls share the same root cause — host staging — but the
 all-to-all case is worse because it converts a bandwidth bottleneck into
-a pure congestion bottleneck that no algorithm tuning can route around.
+a congestion bottleneck that algorithm tuning cannot remove (since the host-staging
+copies remain regardless of algorithm choice).
 
 See [Alltoall — MoE Expert Routing](../notebooks/03c_alltoall_moe) for
 benchmark results and tuning guidance.
@@ -1214,7 +1215,8 @@ The code shows this directly:
 - `allreduce_scaleout_sycl.cpp` line 33: `TODO: chunking/pipelining` — the
   sequential D2H → allreduce → H2D pipeline has no overlap implementation
 - `allreduce_scaleout_sycl.cpp` line 66: `ep_idx = 0; // TODO: use correct
-  endpoint index` — this collective call uses a fixed endpoint index
+  endpoint index` — this call uses a fixed endpoint index; broader contention
+  scope is not established from this line alone
 - `coll_util.cpp` (scaleout path): `!enable_hmem` gates D2H copy for every
   inter-node allreduce, allgather, reduce-scatter, all-to-all, and reduce
 

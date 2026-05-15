@@ -178,7 +178,7 @@ If KV transfer shared the same NIC queues as TP allreduce:
   → 2-6 tokens generated with degraded TPOT
 ```
 
-Physical separation (different QPs, or different NICs) is required to avoid this.
+Physical separation (different QPs, or different NICs) is recommended to avoid this.
 
 ---
 
@@ -204,7 +204,7 @@ The recommended deployment:
 - **NIC 0** (Socket 0 PCIe root): TP/EP collective traffic via oneCCL
 - **NIC 1** (Socket 1 PCIe root): KV cache bulk transfers via NIXL
 
-This ensures the two traffic classes never contend for the same physical PCIe link.
+This reduces contention between the two traffic classes on the same physical PCIe link.
 
 ---
 
@@ -219,8 +219,8 @@ In training:
 - Pipeline parallelism uses **point-to-point** send/recv through oneCCL's transport layer
   (`dist.isend`/`dist.irecv`), not NIXL.
 - There is no prefill→decode KV transfer because training does not separate those phases.
-- There is no need to separate traffic classes by NIC because all traffic is oneCCL-managed
-  collectives of similar size and priority.
+- For standard training-only deployments, there is no need to separate traffic classes by NIC
+  because all traffic is oneCCL-managed collectives of similar size and priority.
 
 ```
 Training workload communication:

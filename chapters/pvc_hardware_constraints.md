@@ -12,7 +12,8 @@ past the `topo` algorithm section is a deep dive into HMEM internals and scaling
 that you can return to when diagnosing production performance issues.
 
 This chapter covers BMG/CRI (Battlemage / Crescent Island, Xe3) with context from PVC
-(Ponte Vecchio, Xe-HPC). Both generations share the same two limits.
+(Ponte Vecchio, Xe-HPC). PVC and BMG/CRI both lack GPU-initiated network I/O, but
+differ sharply on intra-node fabric: PVC has Xe Link, BMG/CRI has only PCIe.
 
 ---
 
@@ -195,12 +196,14 @@ if (should_disable_rdma(ze_dev) || atl_transport == ccl_atl_ofi) {
 The comment in `sycl_coll_base.cpp` at `check_mpi_supports_rdma()` states:
 `"ofi collective only supports host memory"`.
 
-**Why `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` doesn't work with OFI:** OFI's collective
-path (the code that actually calls `allreduce` on the ATL layer) does not use the
-HMEM memory registration mechanism that would let the NIC read GPU memory directly.
-HMEM registration only applies to OFI's point-to-point send/recv. When oneCCL's
-SYCL scaleout kernel calls `atl_comm->allreduce()`, it goes through the collective
-path, which always expects host-accessible buffers.
+**Why `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA` doesn't work with OFI:** This knob controls
+the SYCL scaleout code path in `allreduce_scaleout_sycl.cpp`, which calls
+`atl_comm->allreduce()` — OFI's collective-level interface that expects host-accessible
+buffers. `CCL_ATL_HMEM=1` is a separate mechanism: it enables OFI-level HMEM
+registration (`fi_mr_regattr` with `FI_HMEM_ZE`) on the point-to-point send/recv path,
+allowing the NIC to DMA from GPU memory directly. The two are independent code paths
+gated at different levels (see the split-path explanation in
+[Host Staging](host_staging_scaling) §2.0).
 
 **Result:** `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA=1` only works with **MPI transport**
 (requires `I_MPI_OFFLOAD=2` with Intel MPI, or MPICH with

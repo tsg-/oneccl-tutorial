@@ -7,7 +7,7 @@ This chapter argues that oneCCL's multi-node GPU path on Intel Ponte Vecchio
 (`CCL_ATL_HMEM=1`) is unverified on Aurora: the hardware and driver stack are
 capable, but whether it activates depends on the deployed libfabric build and
 runtime configuration (see §7). Until confirmed, host staging is the only
-verified functional path. The
+path confirmed in this deployment baseline. The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
 (2) small BF16 scaleout messages in the decode regime always select the `direct` scaleout path,
@@ -142,10 +142,10 @@ else if (ccl_dtype == ccl::datatype::bfloat16) {
 Source: `src/coll/algorithms/utils/sycl_selection.cpp`
 
 For any multi-node PVC deployment at ≥2 nodes with 12 tiles/node, `comm_size`
-is ≥24, so the `comm_size > 8` branch is always active. The effective threshold
+is ≥24, so the `comm_size > 8` branch is active. The effective threshold
 for Aurora-scale decode is `size <= 4 MB`. A batch-1, `d_model = 8192`, BF16
-activation is 16 KB — 250× below that threshold. Decode-time TP activations
-unconditionally select `direct` within this scope, where fixed step cost
+activation is 16 KB — 250× below that threshold. Under these selector
+conditions, decode-time TP activations select `direct`, where fixed step cost
 dominates.
 
 ### 4.3 `topo` Scaleout Uses Host Buffers When HMEM Is Disabled
