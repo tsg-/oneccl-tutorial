@@ -1104,13 +1104,15 @@ export CCL_LOG_LEVEL=info  # verify with: grep "use_hmem: 1" startup log
 Eliminates the D2H and H2D memcpy steps entirely (see §2.0), cutting per-step
 latency from ~8 µs to ~4 µs. At N=8 nodes: T_comm drops from 40 µs to ~22 µs.
 
-The hardware and driver stack are capable (xe driver exports GPU BAR via
-dmabuf; libfabric util-layer `src/hmem_ze.c` has a complete `FI_HMEM_ZE`
-implementation; Cassini NIC can DMA from dmabuf-registered memory). Whether
-it activates depends on the deployed libfabric build and runtime configuration
-— the `HAVE_ZE` compile flag is the most common gate, but driver version and
-kernel dmabuf support also matter. The CXI provider has a
-`force_ze_hmem_support` environment variable that may also be needed.
+The underlying stack is demonstrated: xe driver exports GPU BAR via dmabuf,
+libfabric util-layer `src/hmem_ze.c` has a complete `FI_HMEM_ZE`
+implementation, Cassini NIC can DMA from dmabuf-registered memory, and MPICH
+already does GPU Direct RDMA via this path on Aurora (Allcock et al.,
+arXiv:2509.08207). Whether oneCCL activates HMEM depends on its ATL probe
+succeeding against the deployed libfabric provider — the `HAVE_ZE` compile
+flag is the most commonly cited gate, but oneCCL's probe path may have
+additional requirements. The CXI provider's `force_ze_hmem_support`
+environment variable may also be needed.
 
 **Always confirm with `"use_hmem: 1"` in the startup log.** If it does not
 appear, oneCCL silently fell back to host staging and the flag had no effect.

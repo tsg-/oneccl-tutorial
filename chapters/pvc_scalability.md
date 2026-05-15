@@ -4,10 +4,11 @@
 
 This chapter argues that oneCCL's multi-node GPU path on Intel Ponte Vecchio
 (PVC) on Aurora is limited by host-staged scaleout. The HMEM bypass
-(`CCL_ATL_HMEM=1`) is unverified on Aurora: the hardware and driver stack are
-capable, but whether it activates depends on the deployed libfabric build and
-runtime configuration (see §7). Until confirmed, host staging is the only
-path confirmed in this deployment baseline. The
+(`CCL_ATL_HMEM=1`) is not assumed active on Aurora in this baseline. Available
+evidence indicates the PVC/Cassini stack can support GPU-memory DMA through
+dmabuf/`FI_HMEM_ZE`, but oneCCL only uses that path if the deployed libfabric
+provider build and runtime probe enable HMEM. Until `use_hmem: 1` is observed
+on the target system, the confirmed baseline is the host-staged path (see §7). The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
 (2) small BF16 scaleout messages in the decode regime select the `direct` scaleout path under the selector conditions considered here,
@@ -69,11 +70,13 @@ traffic.
 The central claim is:
 
 > On PVC on Aurora, oneCCL's multi-node GPU allreduce path is host-staged on
-> scaleout by default. The HMEM bypass (`CCL_ATL_HMEM=1`) is unverified on
-> Aurora: hardware and driver stack are capable, but whether it activates
-> depends on the deployed libfabric build and runtime configuration. Until
-> confirmed, host staging adds a fixed software latency term to every inter-node
-> step of the collective.
+> scaleout by default. The HMEM bypass (`CCL_ATL_HMEM=1`) is not assumed
+> active in this baseline. Available evidence indicates the PVC/Cassini stack
+> can support GPU-memory DMA through dmabuf/`FI_HMEM_ZE`, but oneCCL only
+> uses that path if the deployed libfabric provider build and runtime probe
+> enable HMEM. Until `use_hmem: 1` is observed on the target system, host
+> staging adds a fixed software latency term to every inter-node step of the
+> collective.
 
 The PVC scaling limit for small-message decode is not set by lack of intra-node
 bandwidth. It is set by repeating a host-mediated inter-node path as node count
@@ -349,7 +352,7 @@ separate PVC analysis.
 
 ---
 
-## 7. HMEM Status on Aurora: A Build/Deployment Question
+## 7. HMEM Status on Aurora: An oneCCL Probe Question
 
 The source makes clear that HMEM is gated:
 
@@ -361,11 +364,12 @@ bool enable_hmem = (ccl::global_data::env().use_hmem && atl_base_comm::attr.out.
 the libfabric provider for `FI_HMEM` support. For Intel GPU memory, oneCCL
 calls `fi_mr_regattr(iface=FI_HMEM_ZE)` — the Intel Level Zero HMEM interface.
 
-**Hardware and driver stack are capable.** The PVC xe driver exports GPU BAR
+**The underlying stack is demonstrated.** The PVC xe driver exports GPU BAR
 memory as Linux dmabuf via Level Zero's `ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF`.
 The Cassini NIC can DMA from dmabuf-registered memory. Allcock et al.
-(arXiv:2509.08207) confirm GPU Direct RDMA via dma-buf P2P DMA already works
-on Aurora through MPICH.
+(arXiv:2509.08207) confirm GPU Direct RDMA via dma-buf P2P DMA works
+on Aurora through MPICH — proving the hardware, kernel, and libfabric stack
+are capable.
 
 **libfabric has a complete ZE HMEM implementation** — in the util-layer at
 `src/hmem_ze.c` (behind `#if HAVE_ZE`), not in `prov/cxi/src/`. CXI routes
@@ -373,11 +377,11 @@ through the shared `hmem_ops[FI_HMEM_ZE]` dispatch table and has a
 `force_ze_hmem_support` environment variable, which means ZE support was
 explicitly anticipated. No CXI-specific ZE code is needed.
 
-**The operative question is a deployment fact:** does the libfabric on Aurora
-have `FI_HMEM_ZE` enabled and working? The most likely gate is the `HAVE_ZE`
-compile flag, but driver version, kernel dmabuf support, and NIC firmware can
-also affect whether the probe succeeds. If the probe fails, oneCCL falls back
-to host staging silently. To check:
+**The remaining question is oneCCL's probe:** does oneCCL's ATL layer
+successfully negotiate `FI_HMEM` with the CXI provider on the deployed system?
+The `HAVE_ZE` compile flag in libfabric is the most commonly cited gate, but
+oneCCL's probe path may have additional requirements. If the probe fails,
+oneCCL falls back to host staging silently. To check:
 
 ```bash
 fi_info -v -p cxi 2>/dev/null | grep -i "ze\|hmem"
@@ -400,9 +404,9 @@ dist.destroy_process_group()
 " 2>&1 | grep -i "use_hmem\|hmem"
 ```
 
-If `use_hmem: 1` does not appear, HMEM fell back to staging regardless of the
-flag. Until the Aurora system team confirms the HMEM path is active, host staging
-is the only path confirmed to work.
+If `use_hmem: 1` does not appear, oneCCL's probe failed and the library fell
+back to host staging regardless of the flag. The underlying stack capability is
+not in question (MPICH proves it); the gap is oneCCL-specific probe verification.
 
 ---
 
@@ -414,9 +418,9 @@ activations, stages through host memory, and executes a sequential
 `D2H -> host_task(allreduce + wait) -> H2D` chain. Under OFI, that path forces
 `copy_to_host = true`.
 
-The HMEM bypass (`CCL_ATL_HMEM=1`) requires a compatible libfabric build and
-runtime configuration (see §7). Until verified on the target deployment, host
-staging is the only inter-node path confirmed to work.
+The HMEM bypass (`CCL_ATL_HMEM=1`) can eliminate host staging if oneCCL's ATL
+probe succeeds (see §7). The underlying stack is demonstrated through MPICH;
+the gap is oneCCL-specific probe verification on the target deployment.
 
 Host staging inserts a fixed host-mediated cost into every inter-node step.
 For small, latency-sensitive decode collectives this accumulates across steps,
