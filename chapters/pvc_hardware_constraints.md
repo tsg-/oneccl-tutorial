@@ -697,10 +697,10 @@ BMG/CRI nodes are more constrained than Aurora:
 - PCIe-only intra-node path
 
 Expect **higher per-collective latency** and **lower bandwidth** than the Aurora numbers
-above. The Aurora benchmarks are an upper bound on Intel GPU collective communication
-performance with fabric. BMG/CRI without fabric will sit closer to the small-message
-latency floor (15-25 us per collective) and will not scale bandwidth as well with
-message size.
+above. The Aurora MPI results are a useful PVC reference point, not a bound on optimized
+collective implementations (HiCCL demonstrated 12× improvement over baseline oneCCL at
+4 nodes). BMG/CRI without fabric will sit closer to the small-message latency floor
+(15-25 us per collective) and will not scale bandwidth as well with message size.
 
 ---
 

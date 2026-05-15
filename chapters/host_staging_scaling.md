@@ -401,9 +401,11 @@ T_topo ≈ 10 + log₂(N) * 16 us
 
 At 2048 nodes: `T_topo ≈ 10 + 11*16 = 186 us`
 
-This is consistent with the Aurora measurements and confirms the model.
-The Xe Link phase on PVC amortizes some PCIe contention (fewer tiles staging
-per node), but does not change the per-step inter-node latency.
+This is consistent with the Aurora measurements, but the microbenchmark does
+not by itself validate the decode crossover — it measures collective latency at
+scale, not end-to-end decode efficiency. The Xe Link phase on PVC amortizes
+some PCIe contention (fewer tiles staging per node), but does not change the
+per-step inter-node latency.
 
 ---
 
@@ -707,9 +709,10 @@ With f_serial = 0.25 (25% non-parallelizable):
   N=64:  max speedup = 1 / (0.25 + 0.75/64) = 3.8×  (almost no gain over N=16)
 ```
 
-The practical efficiency floor from Amdahl alone limits useful TP to ~8–16 tiles
-before the serial fraction dominates — independent of communication overhead.
-When communication overhead is added on top, the effective wall appears earlier.
+The practical efficiency floor from Amdahl alone limits useful TP to ~8–16 nodes
+(96–192 tiles at 12 tiles/node) before the serial fraction dominates —
+independent of communication overhead. When communication overhead is added on
+top, the effective wall appears earlier.
 
 **Limited async overlap.** `async_op=True` can hide at most the non-GEMM work
 between layers (~5–15 µs). At N=8 nodes T_comm ≈ 40 µs, so only ~25–35% of
@@ -1006,9 +1009,8 @@ The HiCCL paper (Hidayetoglu et al., arXiv 2408.05962) reported a **12.1x
 geometric mean improvement** over oneCCL across allreduce, broadcast, and
 all-to-all on 4 Aurora nodes. HiCCL's primary mechanism was topology-aware
 decomposition that concentrates staging traffic on NIC-proximate tiles and
-avoids unnecessary PCIe crossings. This improvement at just 4 nodes indicates
-that even at small scale, the staging overhead is the bottleneck — not
-algorithm selection or ring topology.
+avoids unnecessary PCIe crossings. This indicates that topology-aware handling
+of staged traffic can materially improve performance even at small scale.
 
 A follow-on study, CoCoDiff (Ma et al., arXiv:2604.14561, 2025), reported
 **3.6× average (8.4× peak) speedup** over the oneCCL baseline when scaling
@@ -1271,13 +1273,14 @@ on the target model and node count.
 
 - Ibeid et al., "Scaling MPI Applications on Aurora" (arXiv:2512.04291, Dec 2025)
   — Aurora allreduce scaling data (Fig 14), NIC effective bandwidth (Fig 12),
-  PCIe Gen4→Gen5 conversion overhead, recursive doubling algorithm confirmation
+  PCIe Gen4→Gen5 conversion overhead, recursive-doubling/tree-like behavior indicated
+  by published scaling curves
 - Allcock et al., "Aurora: Architecting Argonne's First Exascale Supercomputer"
   (arXiv:2509.08207, Sep 2025) — ECB topology diagram (Fig 4), PCIe Gen5 x16
   GPU→CPU (64 GB/s), PCIe Gen4 NIC path (32 GB/s), GPU Direct RDMA via dmabuf,
   DDR5 8-channel memory per socket, Slingshot-11 Cassini 200 Gbps NIC
 - Goto et al., "Sustaining Exascale Performance: Lessons from HPL and HPL-MxP
-  on Aurora" (arXiv:2604.09517, 2026) — independent confirmation of "PCIe switches
+  on Aurora" (arXiv:2604.09517, 2026) — confirms "PCIe switches
   that fan out Gen5 x16 lanes to Gen4 x16 endpoints" for NIC-facing ports
 - Hidayetoglu et al., "HiCCL: A Hierarchical Collective Communication Library"
   (arXiv:2408.05962, IPDPS 2025) — 12.1× improvement over oneCCL at 4 nodes,

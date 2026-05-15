@@ -10,7 +10,7 @@ runtime configuration (see §7). Until confirmed, host staging is the only
 path confirmed in this deployment baseline. The
 argument rests on oneCCL source code. The relevant paths show five points:
 (1) the SYCL+ZE allreduce path selects `topo` as the main GPU algorithm,
-(2) small BF16 scaleout messages in the decode regime always select the `direct` scaleout path,
+(2) small BF16 scaleout messages in the decode regime select the `direct` scaleout path under the selector conditions considered here,
 (3) the `topo` scaleout path stages through host buffers when HMEM is disabled,
 (4) the SYCL scaleout implementation runs a sequential
 `D2H -> host_task(allreduce+wait) -> H2D` chain, and (5) the OFI transport
