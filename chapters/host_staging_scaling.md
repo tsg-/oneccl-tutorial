@@ -1,4 +1,4 @@
-# Host Staging: The Scaling Wall
+# Host-Staged GPU Collectives in oneCCL: Mechanisms, Models, and Scaling Implications
 
 ## Abstract
 
@@ -17,16 +17,16 @@ quantitatively, and identifies the conditions under which the wall appears.
 
 **Reader map:**
 - §1-2: Mechanism — what host staging is and how the D2H→allreduce→H2D chain works in oneCCL source
-- §2.0: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
+- §2.1: HMEM — the `CCL_ATL_HMEM=1` bypass, what gates it, deployment verification
 - §3-5: Scaling model — alpha-beta derivation, bottlenecks, crossover estimate (8-16 nodes for decode)
-- §5b: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
-- §5c: MoE — alltoallv scaling under host staging
-- §6-7: Evidence and comparison — Aurora measurements, GPUDirect RDMA contrast
-- §8: Mitigation — HMEM activation, CXI direct, UALink roadmap
+- §6: Training — gradient allreduce, ZeRO, pipeline parallelism behavior under staging
+- §7: MoE — alltoallv scaling under host staging
+- §8-9: Evidence and comparison — Aurora measurements, GPUDirect RDMA contrast
+- §10: Deployment guidance — runtime configuration, HMEM activation, mitigation limits
 
 ---
 
-## 1. Background: What Collectives Require of the Hardware
+## 1. Collective Communication Requirements
 
 oneCCL is Intel's collective communication library. It implements allreduce,
 broadcast, all-to-all, and other operations that are on the critical path of
@@ -57,7 +57,7 @@ derive the implied scaling crossover for a representative decode workload.
 
 ---
 
-## 2. The Host Bounce Buffer Mechanism
+## 2. Host-Staged Scaleout Mechanism
 
 On PVC and BMG/CRI, GPU kernels cannot issue network operations. The NIC is not
 accessible from GPU-side code. Data must bounce through host DRAM on both
@@ -160,7 +160,7 @@ if (!enable_hmem) {
 Both code paths land in the same place: sequential D2H, network collective,
 H2D — no overlap between stages.
 
-### 2.0 How HMEM Bypasses the Host Staging Path
+### 2.1 HMEM Bypass Path
 
 The diagram above shows "OFI + CCL_ATL_HMEM=1" as a path where data never
 touches host DRAM. This seems to contradict the `copy_to_host = true` override
@@ -206,7 +206,8 @@ Intel GPU allocations via `zeMemGetAllocProperties` and registers them with
 exports GPU BAR memory as Linux dmabuf via Level Zero's
 `ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF`. The Cassini NIC can DMA from
 dmabuf-registered memory (Allcock et al. confirm GPU Direct RDMA via dma-buf
-P2P DMA already works through MPICH on Aurora). libfabric's util-layer
+P2P DMA works through MPICH on Aurora, demonstrating that the platform
+supports GPU-memory DMA through this mechanism). libfabric's util-layer
 `src/hmem_ze.c` is a complete implementation — behind `#if HAVE_ZE` — that the
 CXI provider routes through via the shared `hmem_ops[FI_HMEM_ZE]` dispatch.
 
@@ -220,7 +221,7 @@ indicating ZE was explicitly anticipated but treated as off-by-default.
 Always verify with `CCL_LOG_LEVEL=info`: if `"use_hmem: 1"` does not appear in
 startup output, HMEM fell back to staging regardless of the flag setting.
 
-### 2.1 Staging Buffer Management
+### 2.2 Staging Buffer Management
 
 The host staging buffer is **pre-allocated** at communicator init time and
 validated per-collective. From `allreduce_scaleout_sycl.cpp` lines 30-40:
@@ -241,7 +242,7 @@ entirely (sets `done = false`) and returns an empty event. There is no
 chunking to handle messages that exceed the buffer. For large allreduces
 at scale (prefill, large gradients), this fallback path triggers silently.
 
-### 2.2 Algorithm Selection by Message Size
+### 2.3 Message-Size-Based Algorithm Selection
 
 `selector.hpp` defines the size thresholds:
 
@@ -274,7 +275,7 @@ The ring algorithm has a limited overlap window
 ring + multi-node + single-worker-mode. For the default scaleout path through
 `allreduce_scaleout_sycl_simple`, there is no overlap at all.
 
-### 2.3 Latency Budget Per Collective Step
+### 2.4 Per-Step Latency Model
 
 For a 16 KB message on a PVC/BMG/CRI node (PCIe Gen4/5, ~32 GB/s effective):
 
@@ -295,7 +296,7 @@ For a 16 KB message on a PVC/BMG/CRI node (PCIe Gen4/5, ~32 GB/s effective):
 
 ---
 
-## 3. Collective Algorithm Scaling Under Bounce Buffer
+## 3. Collective Algorithm Scaling Under Host Staging
 
 ### 3.1 Recursive Doubling
 
@@ -380,7 +381,7 @@ bandwidth efficiency matters more than latency. For decode inference (small
 messages, latency critical), recursive doubling is selected automatically
 via the threshold in `selector_allreduce.cpp`.
 
-### 3.3 The topo Hierarchical Algorithm
+### 3.3 Hierarchical `topo` Allreduce
 
 `topo` reduces inter-node traffic by performing an intra-node reduce-scatter
 first (Xe Link on PVC, PCIe P2P on BMG/CRI), then running the scaleout collective
@@ -409,9 +410,9 @@ per-step inter-node latency.
 
 ---
 
-## 4. The Three Scaling Bottlenecks
+## 4. Sources of Scaling Overhead
 
-### 4.1 Host DRAM Bandwidth Saturation
+### 4.1 Host DRAM Bandwidth Pressure
 
 On a PVC node with 12 tiles, all 12 tiles stage through host DRAM
 simultaneously during the reduce-scatter phase. The staging path is:
@@ -459,7 +460,7 @@ GPU-memory buffers, and Goto et al. (arXiv:2604.09517) describe the Aurora
 fabric geometry as "PCIe switches that fan out Gen5 x16 lanes to Gen4 x16
 endpoints" for the NIC-facing ports.
 
-### 4.2 Sequential Stages with No Pipelining
+### 4.2 Sequential Copy and Network Stages
 
 The `allreduce_scaleout_sycl_simple` path (lines 29-100) chains three
 sequential SYCL submissions via event dependencies:
@@ -482,7 +483,7 @@ NCCL's implementation of ring allreduce pipelines chunk transmission with
 chunk reduction, achieving near-wire-speed bandwidth on large messages.
 oneCCL's staging path does not have an equivalent.
 
-### 4.3 CPU Orchestration as Serialization Point
+### 4.3 CPU-Orchestrated Progress
 
 Every OFI operation requires host CPU involvement through a SYCL `host_task`.
 The `host_task` submits to the SYCL host task queue, which serializes within
@@ -519,7 +520,7 @@ host thread until MPI/OFI reports completion. Under load, the SYCL
 scheduler cannot repurpose this thread for other work while it is blocked
 in `wait()`. The net effect is a blocking wait on the critical path.
 
-### 4.4 Worker Thread Model
+### 4.4 Worker Thread Scheduling
 
 oneCCL uses a worker thread pool (default: 1 worker per rank via
 `CCL_WORKER_COUNT`). The executor routes collectives by `sched_id %
@@ -555,7 +556,7 @@ between task submission and execution when the worker reaches queue depth > 1.
 
 ---
 
-## 5. Where the Scaling Wall Appears
+## 5. Decode-Time Allreduce Scaling Model
 
 The scaling wall is the node count N* where `T_communication >= T_compute`
 per layer. For decode inference:
@@ -629,7 +630,7 @@ set in sharply.
 Under these assumptions, N* ≈ 8-16 nodes. Beyond this, allreduce dominates the
 per-token budget in the model.
 
-### Concrete Example: Llama-3 70B, TP=8 tiles/node, Batch=1 Decode
+### 5.1 Representative Llama-3 70B Decode Case
 
 For a specific, measurable case: Llama-3 70B, tensor-parallel across N nodes
 with 8 tiles per node (one rank per tile), batch=1 decode, BF16.
@@ -748,7 +749,7 @@ scaling wall earlier by the same factor.
 
 ---
 
-## 5b. Training Scaling: Bandwidth Sufficiency Wall
+## 6. Training-Time Bandwidth Model
 
 The inference scaling analysis above addresses the **latency wall** — when allreduce latency
 exceeds per-layer compute time for decode. Training has a different scaling failure mode:
@@ -758,7 +759,7 @@ For inference, the question is: *is allreduce fast enough to stay off the critic
 For training, the question is: *is there enough bandwidth to move all gradients within
 the step time?*
 
-### Gradient Volume at Scale
+### 6.1 Gradient Volume at Scale
 
 For a 7B model with BF16 parameters, the total gradient volume per step is:
 
@@ -781,7 +782,7 @@ Time to move gradients = 21 GB / 25 GB/s = 840 ms
 A 7B model forward + backward pass takes roughly 500–800 ms at batch=32 on a BMG/CRI node.
 This means gradient communication is **already bandwidth-bound at 4 GPUs** with DDP.
 
-### Why ZeRO Changes the Calculation
+### 6.2 Effect of ZeRO on Communication Volume
 
 ZeRO-2 and ZeRO-3 do not reduce the *total data moved* — they change *when* the data
 moves and how much is buffered at once:
@@ -810,7 +811,7 @@ ZeRO-3 (per-layer Allgather + ReduceScatter):
 ZeRO-3 trades bandwidth for memory. If you are already bandwidth-bound, ZeRO-3
 makes it worse — only use it when per-GPU memory is the constraint.
 
-### Where the Training Wall Appears
+### 6.3 Training Scaling Regimes
 
 The training scaling wall appears when gradient communication time exceeds the
 compute time that can overlap with it:
@@ -843,7 +844,7 @@ can be partially mitigated by **gradient compression**, **pipeline parallelism**
 (more compute per byte of gradient). See [When to Use Which Collective — Training](03_when_to_use)
 for the full breakdown.
 
-### Practical Implication for BMG/CRI Training Deployments
+### 6.4 Implications for BMG/CRI Training Deployments
 
 ```
 Model    | Gradients | PCIe BW limit | Max GPUs before BW wall (est.)
@@ -860,14 +861,14 @@ large allreduces) matters more than algorithm selection.
 
 ---
 
-## 5c. MoE Scaling: PCIe Congestion Wall
+## 7. MoE Expert-Parallel Communication
 
 DeepSeek-R1 (671B total, ~37B active per token, 256 experts) cannot fit on a
 single node — it physically requires Expert Parallelism (EP) across multiple
 nodes. This forces a different traffic pattern than Llama-3's TP allreduce, and it hits
 the host staging wall through a different mechanism.
 
-### Why Expert Parallelism Requires Multi-Node
+### 7.1 Multi-Node Requirements for Expert Parallelism
 
 DeepSeek-R1's parameters (BF16): 671B × 2 bytes = 1.34 TB. Even with only
 37B parameters active per token, the full expert table must be resident
@@ -875,7 +876,7 @@ somewhere — 256 experts × ~2.6 GB each. A single BMG/CRI node with 128 GB HBM
 cannot hold the model. Expert parallelism distributes experts across nodes:
 with 8 nodes, each node holds ~32 experts.
 
-### The Traffic Pattern: Dispatch + Combine
+### 7.2 Dispatch and Combine Traffic
 
 Each MoE layer executes two all-to-all collectives per forward pass:
 
@@ -903,7 +904,7 @@ host per rank per all-to-all:
 Data per rank = 7 × 1.8 MB = 12.6 MB
 ```
 
-### The Congestion Mechanism: Simultaneous Staging
+### 7.3 Host-Staging Congestion Mechanism
 
 The difference from Llama-3's allreduce:
 
@@ -954,7 +955,7 @@ does not, and the CPU-to-NIC posting overhead accumulates across all 11 peer
 nodes in parallel. The mechanism is different: allreduce suffers per-hop
 latency amplification; all-to-all suffers host DRAM bus contention.
 
-### Contrast: Llama-3 vs DeepSeek-R1 Failure Modes
+### 7.4 Contrast Between Dense Decode and MoE Routing
 
 | | Llama-3 70B (TP) | DeepSeek-R1 (EP) |
 |---|---|---|
@@ -978,7 +979,7 @@ benchmark results and tuning guidance.
 
 ---
 
-## 6. Empirical Validation from Aurora
+## 8. Aurora Measurement Context
 
 The Aurora benchmark data (Ibeid et al., arXiv:2512.04291, Figure 14:
 "Latency for MPI reduction operation for buffers located in GPU memory")
@@ -1023,7 +1024,7 @@ algorithm in §3.3 reduces inter-node message count. That 3–8× gap at only
 
 ---
 
-## 7. Comparison with NVIDIA GPUDirect RDMA
+## 9. Comparison with GPU Direct RDMA
 
 On NVIDIA hardware, NIC-to-GPU DMA is enabled by default via `nvidia-peermem`.
 The GPU kernel cannot autonomously post RDMA operations (that requires
@@ -1062,23 +1063,25 @@ The Intel HMEM path (`CCL_ATL_HMEM=1`) would eliminate the D2H and H2D
 copies, with the CPU still calling `fi_tsendmsg()` and data going GPU → NIC
 → wire → NIC → GPU via PCIe BAR mapping (Linux dmabuf). The hardware, xe
 driver, and libfabric util-layer (`src/hmem_ze.c`, `#if HAVE_ZE`) are all
-capable — GPU Direct RDMA via dma-buf P2P DMA already works through MPICH on
-Aurora (Allcock et al.). Whether `CCL_ATL_HMEM=1` activates this path depends on the deployed libfabric
-build and runtime configuration. The ~4 µs figure is contingent on the HMEM
+capable — Allcock et al. confirm GPU Direct RDMA via dma-buf P2P DMA works
+through MPICH on Aurora, demonstrating that the platform can support
+GPU-memory DMA through this mechanism. Whether `CCL_ATL_HMEM=1` activates
+this path in oneCCL depends on its ATL probe succeeding against the deployed
+libfabric provider. The ~4 µs figure is contingent on the HMEM
 path being confirmed active. The remaining
 gap vs NVIDIA after that would be CPU-still-posts overhead (~1.5 µs/step),
 which UALink and GPU-initiated RDMA are designed to close.
 
 ---
 
-## 8. What To Do Right Now
+## 10. Deployment Guidance
 
 If you are debugging a performance regression or deploying on a BMG/CRI system
 today, these are the flags to try in order of impact. None eliminate host
 staging, but together they recover 40–60% of the overhead in most decode
 workloads.
 
-### Immediate Flags
+### 10.1 Runtime Configuration Options
 
 **1. `async_op=True` on every collective call**
 
@@ -1107,11 +1110,12 @@ latency from ~8 µs to ~4 µs. At N=8 nodes: T_comm drops from 40 µs to ~22 µs
 The underlying stack is demonstrated: xe driver exports GPU BAR via dmabuf,
 libfabric util-layer `src/hmem_ze.c` has a complete `FI_HMEM_ZE`
 implementation, Cassini NIC can DMA from dmabuf-registered memory, and MPICH
-already does GPU Direct RDMA via this path on Aurora (Allcock et al.,
-arXiv:2509.08207). Whether oneCCL activates HMEM depends on its ATL probe
-succeeding against the deployed libfabric provider — the `HAVE_ZE` compile
-flag is the most commonly cited gate, but oneCCL's probe path may have
-additional requirements. The CXI provider's `force_ze_hmem_support`
+does GPU Direct RDMA via this path on Aurora (Allcock et al.,
+arXiv:2509.08207), demonstrating that the platform can support GPU-memory
+DMA through this mechanism. Whether oneCCL activates HMEM depends on its ATL
+probe succeeding against the deployed libfabric provider — the `HAVE_ZE`
+compile flag is the most commonly cited gate, but oneCCL's probe path may
+have additional requirements. The CXI provider's `force_ze_hmem_support`
 environment variable may also be needed.
 
 **Always confirm with `"use_hmem: 1"` in the startup log.** If it does not
@@ -1151,7 +1155,7 @@ For large-message allreduces (> 2 MB BF16, common in prefill and training),
 ring is more bandwidth-efficient than the default. For decode (16 KB messages),
 leaving this unset is correct — the selector already picks recursive doubling.
 
-### What You Can Expect
+### 10.2 Expected Effect on Decode Latency
 
 For Llama-3 70B decode at N=8 nodes (64 tiles, T_compute ≈ 256 µs/layer):
 
@@ -1169,7 +1173,7 @@ fraction reaches 44%+. For Llama-3 70B decode on BMG/CRI, the model
 suggests 4–8 nodes as a reasonable operating range; beyond 16 nodes,
 allreduce growth outpaces the compute savings from adding ranks.
 
-### What Would Change This
+### 10.3 Conditions That Change the Scaling Model
 
 Two things would reduce the bounce buffer cost:
 
@@ -1188,7 +1192,7 @@ Two things would reduce the bounce buffer cost:
 
 Until one of those changes, the table above is the expected operating range.
 
-### Mitigation Strategies and Their Ceilings
+### 10.4 Mitigation Limits
 
 | Strategy | Mechanism | Effect | Ceiling |
 |---|---|---|---|
@@ -1217,7 +1221,7 @@ that would are:
 
 ---
 
-## 9. Summary
+## 11. Summary
 
 The host bounce buffer in oneCCL's default configuration adds approximately
 6-8 us of per-step overhead to every inter-node collective on this path.

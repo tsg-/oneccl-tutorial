@@ -31,9 +31,9 @@ parts:
     chapters:
       - file: chapters/perf_tuning
       - file: chapters/pvc_scalability
-        title: "PVC: Host-Staged Scaleout"
+        title: "PVC: Scaleout Mechanisms"
       - file: chapters/host_staging_scaling
-        title: "Host Staging: The Scaling Wall"
+        title: "Host-Staged Collectives: Models and Scaling"
       - file: chapters/native_cpp_api
         title: "Native C++ / SYCL Integration"
       - file: chapters/debugging_profiling

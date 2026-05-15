@@ -1,4 +1,4 @@
-# PVC Host-Staged Scaleout in oneCCL
+# Host-Staged Scaleout on Intel PVC: oneCCL Mechanisms and Deployment Conditions
 
 ## Abstract
 
@@ -47,7 +47,7 @@ inter-node GPU collectives and explains why that limits scaling.
 
 ---
 
-## 2. Scope and Claim
+## 2. Scope and Central Claim
 
 This chapter is limited to:
 
@@ -85,7 +85,7 @@ verified before relying on it (see §7).
 
 ---
 
-## 3. Why PVC Still Has an Inter-Node Software Problem
+## 3. Inter-Node Data Path on PVC
 
 PVC has Xe Link. That reduces the cost of local reduce-scatter and allgather
 work inside `topo`. It does not, by itself, solve the inter-node scaleout path.
@@ -108,9 +108,9 @@ oneCCL path.
 
 ---
 
-## 4. Source Code
+## 4. Source-Level Evidence
 
-### 4.1 GPU Allreduce Enters `topo`
+### 4.1 SYCL/ZE GPU Allreduce Selection
 
 In the SYCL+ZE configuration, oneCCL installs `topo` as the main allreduce
 algorithm:
@@ -126,7 +126,7 @@ that oneCCL actually selects. The question is not whether oneCCL contains ring
 or recursive-doubling code elsewhere. The question is what `topo` does at
 multi-node scaleout.
 
-### 4.2 Small BF16 Scaleout Messages Select `direct`
+### 4.2 Scaleout Selection for Small BF16 Messages
 
 For the SYCL scaleout auto-selector, BF16 messages remain on the `direct`
 scaleout path for relatively small sizes:
@@ -151,7 +151,7 @@ activation is 16 KB — 250× below that threshold. Under these selector
 conditions, decode-time TP activations select `direct`, where fixed step cost
 dominates.
 
-### 4.3 `topo` Scaleout Uses Host Buffers When HMEM Is Disabled
+### 4.3 HMEM Gating in the `topo` Scaleout Path
 
 The `topo` scaleout path computes an `enable_hmem` gate and explicitly enters a
 host-buffer path when the gate is false:
@@ -179,7 +179,7 @@ Later logic decides whether an H2D copy is needed after scaleout. Together,
 these branches show that the default multi-node GPU path is staged through host
 memory when HMEM is not active.
 
-### 4.4 The SYCL Scaleout Implementation Is Sequential
+### 4.4 Sequential Execution in the SYCL Scaleout Path
 
 The direct scaleout implementation in `allreduce_scaleout_sycl.cpp` builds the
 path in three phases.
@@ -256,7 +256,7 @@ That warning matters because a staged path could, in principle, recover some
 latency through chunking and overlap. This implementation states that such
 pipelining is not present here.
 
-### 4.5 OFI Forces `copy_to_host` in This SYCL Path
+### 4.5 OFI Transport Behavior in the SYCL Scaleout Path
 
 The same file shows the transport coupling:
 
@@ -277,7 +277,7 @@ to the PVC decode argument.
 
 ---
 
-## 5. What the Source Establishes, and What It Does Not
+## 5. Evidence Boundary
 
 The claim should stay inside the source evidence boundary.
 
@@ -306,7 +306,7 @@ crossover point but are not needed to establish the mechanism.
 
 ---
 
-## 6. Why Host Bounce Buffering Limits PVC Decode Scaling
+## 6. Scaling Implications for Decode-Time Allreduce
 
 For decode-time tensor parallelism, a useful per-layer abstraction is:
 
@@ -352,7 +352,7 @@ separate PVC analysis.
 
 ---
 
-## 7. HMEM Status on Aurora: An oneCCL Probe Question
+## 7. HMEM Activation on Aurora
 
 The source makes clear that HMEM is gated:
 
@@ -368,8 +368,8 @@ calls `fi_mr_regattr(iface=FI_HMEM_ZE)` — the Intel Level Zero HMEM interface.
 memory as Linux dmabuf via Level Zero's `ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF`.
 The Cassini NIC can DMA from dmabuf-registered memory. Allcock et al.
 (arXiv:2509.08207) confirm GPU Direct RDMA via dma-buf P2P DMA works
-on Aurora through MPICH — proving the hardware, kernel, and libfabric stack
-are capable.
+on Aurora through MPICH, demonstrating that the Aurora platform can support
+GPU-memory DMA through this mechanism.
 
 **libfabric has a complete ZE HMEM implementation** — in the util-layer at
 `src/hmem_ze.c` (behind `#if HAVE_ZE`), not in `prov/cxi/src/`. CXI routes
@@ -406,7 +406,7 @@ dist.destroy_process_group()
 
 If `use_hmem: 1` does not appear, oneCCL's probe failed and the library fell
 back to host staging regardless of the flag. The underlying stack capability is
-not in question (MPICH proves it); the gap is oneCCL-specific probe verification.
+demonstrated by MPICH; the gap is oneCCL-specific probe verification.
 
 ---
 
@@ -433,14 +433,14 @@ coefficient becomes dominant in end-to-end decode latency.
 
 ## References
 
-### oneCCL source
+### oneCCL Source
 
 - `src/coll/selection/selector_allreduce.cpp`
 - `src/coll/algorithms/utils/sycl_selection.cpp`
 - `src/coll/coll_util.cpp`
 - `src/coll/algorithms/allreduce/sycl/allreduce_scaleout_sycl.cpp`
 
-### Aurora and measurement references
+### Aurora and Measurement References
 
 - Allcock et al., "Aurora: Architecting Argonne's First Exascale
     Supercomputer for Accelerated Scientific Discovery" (arXiv:2509.08207)
