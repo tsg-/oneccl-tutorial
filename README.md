@@ -38,7 +38,8 @@ oneccl-tutorial/
 │   ├── debugging_profiling.md     # Diagnostics, VTune, log interpretation
 │   ├── native_cpp_api.md          # Native C++ / SYCL integration (no PyTorch)
 │   ├── pvc_scalability.md         # PVC host-staged scaleout (Aurora, source analysis)
-│   └── host_staging_scaling.md    # Host staging scaling wall (model + evidence)
+│   ├── host_staging_scaling.md    # Host staging scaling wall (model + evidence)
+│   └── aurora_large_scale.md      # Training/MoE at 1000+ Aurora nodes
 └── notebooks/
     ├── 02_environment_setup.ipynb
     ├── 03a_allreduce_walkthrough.ipynb   # TP decode hot path

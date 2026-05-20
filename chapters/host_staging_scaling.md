@@ -67,7 +67,7 @@ oneCCL (§2).
 
 ---
 
-## 2. Host-Staged Scaleout Mechanism
+## 2. Host-Staged (Bounce Buffer) Scaleout Mechanism
 
 On PVC and BMG/CRI, GPU kernels cannot issue network operations. The NIC is not
 accessible from GPU-side code. Data must bounce through host DRAM on both
@@ -231,26 +231,16 @@ indicating ZE was explicitly anticipated but treated as off-by-default.
 Always verify with `CCL_LOG_LEVEL=info`: if `"use_hmem: 1"` does not appear in
 startup output, HMEM fell back to staging regardless of the flag setting.
 
-### 2.2 Staging Buffer Management
+### 2.2 Staging Buffer Limits
 
-The host staging buffer is **pre-allocated** at communicator init time and
-validated per-collective. From `allreduce_scaleout_sycl.cpp` lines 30-40:
+The host staging buffer is pre-allocated at communicator init time. When the
+message size exceeds this pre-allocated `scaleout_host_buf_size`, the direct SYCL path
+sets `done = false` and falls back to a different schedule (the outer loop).
 
-```cpp
-if (comm->get_scaleout_host_buf_size() < count * ccl_dtype.size()) {
-    LOG_WARN("scaleout_host_buf_size is not big enough to handle ",
-             count * ccl_dtype.size(),
-             " bytes. Falling back. TODO: chunking/pipelining");
-    done = false;
-    return e;
-}
-scaleout_recv_buf = comm->get_scaleout_host_buf();
-```
-
-If the message exceeds the pre-allocated buffer size, oneCCL falls back
-entirely (sets `done = false`) and returns an empty event. There is no
-chunking to handle messages that exceed the buffer. For large allreduces
-at scale (prefill, large gradients), this fallback path triggers silently.
+While this fallback mechanism is intended to handle chunks iteratively, relying
+on the outer loop rather than a tight, overlapped transmission pipeline (as seen
+in NCCL) contributes to inefficiencies for giant payloads like massive gradient
+syncs or full-KV allgathers.
 
 ### 2.3 Message-Size-Based Algorithm Selection
 
@@ -480,67 +470,38 @@ sequential SYCL submissions via event dependencies:
 ```
 
 Each submission depends on the previous completing. The `TODO:
-chunking/pipelining` comment at line 33 is the oneCCL team's own
-acknowledgment that this is a known limitation. No chunking means:
+chunkingThe SYCL Host Task Scheduler Bottleneck
 
-1. Large messages cannot be split and pipelined — if the message exceeds
-   the staging buffer, the operation falls back entirely
-2. The D2H copy cannot overlap with the H2D copy of the previous step
-3. The network transmission of one chunk cannot overlap with staging
-   of the next chunk
+The actual critical software gap in the default scale-out path is how oneCCL
+orchestrates the CPU's involvement using **SYCL Host Tasks**.
 
-NCCL's implementation of ring allreduce pipelines chunk transmission with
-chunk reduction, achieving near-wire-speed bandwidth on large messages.
-oneCCL's staging path does not have an equivalent.
+When oneCCL issues network communication, it queues it as a SYCL `host_task`.
+The code chains three sequential SYCL submissions via event dependencies:
 
-### 4.3 CPU-Orchestrated Progress
-
-Every OFI operation requires host CPU involvement through a SYCL `host_task`.
-The `host_task` submits to the SYCL host task queue, which serializes within
-a queue. From `allreduce_scaleout_sycl.cpp` lines 62-90:
-
-```cpp
-op_end = q.submit([=](sycl::handler& h) {
-    h.depends_on(dep_events);
-    h.host_task([=]() {
-        int ep_idx = 0;  // TODO: use correct endpoint index
-        atl_req_t req;
-        ATL_CALL_THROW_IF_ERROR(
-            atl_comm->allreduce(ep_idx, send, recv, count, dtype, red, req));
-        ATL_CALL_THROW_IF_ERROR(atl_comm->wait(ep_idx, req));
-    });
-});
+```
+[D2H memcpy] → [host_task(allreduce+wait)] → [H2D memcpy]
 ```
 
-The endpoint index is hardcoded to `0` with a `TODO` comment suggesting it
-should be replaced with `atl_ep->idx` or derived from `sched->bin->get_atl_ep`.
-As written, all collectives issued through this code path use endpoint 0 for
-their ATL communicator. Whether this serializes across ranks depends on whether
-each rank has its own `atl_comm` instance — with MPI transport each rank has
-distinct MPI communicator state, so contention is per-rank rather than
-node-wide. With OFI transport and shared endpoint pools, contention across
-concurrent collectives on the same rank (e.g. pipeline-parallel microbatches)
-is the more likely bottleneck.
+This design subjects the scale-out communication to the constraints of the
+underlying SYCL runtime:
 
-Inside the host task, the code first calls `atl_comm->check()` to test for
-immediate completion, then falls through to `atl_comm->wait()` only if the
-operation is not already done. In practice for network collectives,
-`check()` returns incomplete and `wait()` is invoked — blocking the SYCL
-host thread until MPI/OFI reports completion. Under load, the SYCL
-scheduler cannot repurpose this thread for other work while it is blocked
-in `wait()`. The net effect is a blocking wait on the critical path.
+1. **Scheduling Overhead:** SYCL's host task scheduler tracks task readiness
+   via an internal dependency queue. The SYCL runtime searching the queue for
+   the next task to execute becomes extremely inefficient (a linear search) as
+   the sequence of nested dependencies grows.
+2. **Blocking GPU Tasks:** Because these host tasks have event dependencies with
+   Level Zero (GPU) tasks, a slow host task executing on the CPU (waiting for
+   long-tail network completions via `atl_comm->wait()`) effectively blocks
+   subsequent Level Zero execution. The queue rapidly builds up.
+3. **No Overlap Constraint:** oneCCL fundamentally does not support processing
+   overlapping collective calls within its core scheduling engine in this manner.
 
-### 4.4 Worker Thread Scheduling
+According to Intel oneCCL developers, the accumulation of this queue overhead
+is the primary driver of poor scaling on the host-staged path, prompting efforts
+to bypass `host_task` completely and invoke direct algorithm CPU-GPU memcpys
+and raw MPI paths for future releases.
 
-oneCCL uses a worker thread pool (default: 1 worker per rank via
-`CCL_WORKER_COUNT`). The executor routes collectives by `sched_id %
-workers.size()`. With a single worker, all collective operations for a rank
-are serialized through one thread. Pipeline-parallel workloads that issue
-multiple collectives concurrently (e.g., one allreduce per pipeline stage
-in flight) queue behind each other at the worker.
-
-At high token throughput, the collective rate is:
-
+### 4.3 Worker Thread Queu
 ```
 collectives/second = tokens/second * allreduces_per_token
                    = tokens/second * 160   (80-layer model, 2 allreduces/layer)
@@ -761,6 +722,11 @@ scaling wall earlier by the same factor.
 
 ## 6. Training-Time Bandwidth Model
 
+> **For Aurora at 1000+ nodes:** this section models a single-node BMG/CRI
+> baseline. For Aurora-specific multi-rail throughput modeling, NIC utilization
+> analysis, and tuning at 1000-10,000 nodes, see
+> [Aurora at Scale: Training and MoE](aurora_large_scale).
+
 The inference scaling analysis above addresses the **latency wall** — when allreduce latency
 exceeds per-layer compute time for decode. Training has a different scaling failure mode:
 the **bandwidth wall** — when gradient traffic exceeds the available PCIe/NIC bandwidth.
@@ -872,6 +838,10 @@ large allreduces) matters more than algorithm selection.
 ---
 
 ## 7. MoE Expert-Parallel Communication
+
+> **For MoE at 32-128+ EP nodes on Aurora:** this section models 8-node EP.
+> For larger EP groups and the per-message posting overhead that dominates at
+> scale, see [Aurora at Scale §5](aurora_large_scale).
 
 DeepSeek-R1 (671B total, ~37B active per token, 256 experts) cannot fit on a
 single node — it physically requires Expert Parallelism (EP) across multiple
@@ -1235,15 +1205,13 @@ that would are:
 
 The host bounce buffer in oneCCL's default configuration adds approximately
 6-8 us of per-step overhead to every inter-node collective on this path.
-The code shows this directly:
+The code shows this indirectly through the scale-out structure:
 
 - `allreduce_scaleout_sycl.cpp` line 119: OFI forces `copy_to_host=true`
   unconditionally, regardless of `CCL_SYCL_ENABLE_DIRECT_GPU_RDMA`
-- `allreduce_scaleout_sycl.cpp` line 33: `TODO: chunking/pipelining` — the
-  sequential D2H → allreduce → H2D pipeline has no overlap implementation
-- `allreduce_scaleout_sycl.cpp` line 66: `ep_idx = 0; // TODO: use correct
-  endpoint index` — this call uses a fixed endpoint index; broader contention
-  scope is not established from this line alone
+- `allreduce_scaleout_sycl.cpp` and related paths: use `host_task` to submit
+  blocking communication calls, which creates a massive scheduler event-dependency
+  bottleneck within the SYCL runtime.
 - `coll_util.cpp` (scaleout path): `!enable_hmem` gates D2H copy for every
   inter-node allreduce, allgather, reduce-scatter, all-to-all, and reduce
 
@@ -1273,10 +1241,8 @@ on the target model and node count.
 ### oneCCL Source
 
 - `src/coll/algorithms/allreduce/sycl/allreduce_scaleout_sycl.cpp`:
-  lines 29-100 (sequential D2H/allreduce/H2D pipeline),
-  lines 116-121 (OFI forces copy_to_host=true),
-  line 33 (TODO: chunking/pipelining),
-  line 66 (ep_idx=0 — fixed endpoint index, scope unclear)
+  lines 29-100 (host_task orchestration and blocking wait behavior),
+  lines 116-121 (OFI forces copy_to_host=true)
 - `src/coll/coll_util.cpp`: scaleout path, enable_hmem gate, host buffer allocation
 - `src/coll/selection/selector_allreduce.cpp`: algorithm selection by message size
 - `src/coll/selection/selector.hpp`: CCL_ALLREDUCE_SHORT_MSG_SIZE=8192,

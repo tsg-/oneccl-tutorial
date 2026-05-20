@@ -224,7 +224,7 @@ approach means the collective operation runs entirely on the GPU with no host in
 oneCCL cannot assume GPU fabric (BMG/CRI has none) and cannot fuse collectives into GPU kernels
 (Xe compute EUs cannot initiate network I/O). Instead, oneCCL's `topo` algorithm:
 - Uses **copy engines** for intra-node P2P (Level Zero IPC handles)
-- Uses **host-staged OFI transport** for inter-node communication
+- Uses **host-staged (bounce buffer) OFI transport** for inter-node communication
 - Relies on **overlap with compute** (via `async_op`) to hide latency
 
 The two libraries optimize different things: NCCL optimizes kernel fusion and NVLink

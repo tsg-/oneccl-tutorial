@@ -92,7 +92,7 @@ PVC with Xe Link (Aurora-class):
   Scale-up: ~100+ GB/s per link, no host involvement
 
 BMG/CRI without fabric:
-  GPU0 ←──PCIe──→ CPU ←──PCIe──→ GPU1    (host-mediated)
+  GPU0 ←──PCIe──→ CPU ←──PCIe──→ GPU1    (host-staged)
   Scale-up: limited by PCIe BW (~32 GB/s Gen5 x16), crosses CPU
 ```
 

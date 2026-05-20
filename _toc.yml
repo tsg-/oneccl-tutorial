@@ -33,7 +33,9 @@ parts:
       - file: chapters/pvc_scalability
         title: "PVC: Scaleout Mechanisms"
       - file: chapters/host_staging_scaling
-        title: "Host-Staged Collectives: Models and Scaling"
+        title: "Host-Staged Collectives: Mechanisms and Scaling"
+      - file: chapters/aurora_large_scale
+        title: "Aurora at Scale: Training and MoE (1000+ Nodes)"
       - file: chapters/native_cpp_api
         title: "Native C++ / SYCL Integration"
       - file: chapters/debugging_profiling

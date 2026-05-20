@@ -80,7 +80,7 @@ The central claim is:
 > collective.
 
 The PVC scaling limit for small-message decode is not set by lack of intra-node
-bandwidth. It is set by repeating a host-mediated inter-node path as node count
+bandwidth. It is set by repeating a host-staged inter-node path as node count
 grows. The `CCL_ATL_HMEM=1` path may be able to bypass this — but must be
 verified before relying on it (see §7).
 
@@ -209,15 +209,9 @@ Next, it runs the collective inside a host task and waits for completion:
 op_end = q.submit([=](sycl::handler& h) {
     h.depends_on(dep_events);
     h.host_task([=]() {
-        int ep_idx = 0;
+        /* Networking code is tied to the CPU, stalling the SYCL dependency queue */
         atl_req_t req;
-        ATL_CALL_THROW_IF_ERROR(atl_comm->allreduce(ep_idx,
-                                                    scaleout_send_buf,
-                                                    scaleout_recv_buf,
-                                                    count,
-                                                    ccl_dtype.atl_datatype(),
-                                                    static_cast<atl_reduction_t>(reduction),
-                                                    req));
+        ATL_CALL_THROW_IF_ERROR(atl_comm->allreduce(/* ... */, req));
 
         ATL_CALL_THROW_IF_ERROR(atl_comm->check(ep_idx, req));
         if (!req.is_completed) {
@@ -291,7 +285,7 @@ The claim should stay inside the source evidence boundary.
 | OFI forces `copy_to_host` inside that SYCL path | Yes | `allreduce_scaleout_sycl.cpp` |
 | the exact MPI algorithm used after `direct` delegation | No | oneCCL delegates; MPI must be inspected or measured separately |
 | a universal PVC node-count wall | No | requires workload-specific measurement |
-| node-wide serialization through a single ATL endpoint | No | `ep_idx = 0` is visible here, but the broader system claim needs more evidence |
+| node-wide serialization through inefficient runtime tracking | No | `host_task` block submission restricts throughput |
 
 The source supports a narrower claim than "oneCCL proves recursive doubling on
 Aurora":
@@ -423,7 +417,7 @@ The HMEM bypass (`CCL_ATL_HMEM=1`) can eliminate host staging if oneCCL's ATL
 probe succeeds (see §7). The underlying stack is demonstrated through MPICH;
 the gap is oneCCL-specific probe verification on the target deployment.
 
-Host staging inserts a fixed host-mediated cost into every inter-node step.
+Host staging inserts a fixed staging cost into every inter-node step.
 For small, latency-sensitive decode collectives this accumulates across steps,
 limiting scalability even though PVC has high intra-node Xe Link bandwidth.
 

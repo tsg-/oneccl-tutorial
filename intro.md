@@ -31,7 +31,8 @@ Use this page as the map. The tutorial has three layers:
 | Decide which collective belongs in a workload | [When to Use Which Collective](chapters/03_when_to_use) | [The oneCCL / NIXL Boundary](chapters/nixl_boundary) |
 | Run the examples | [Environment Setup](notebooks/02_environment_setup) | [Allreduce](notebooks/03a_allreduce_walkthrough), [Allgather](notebooks/03b_allgather), [Alltoall](notebooks/03c_alltoall_moe), then [TP Decode](notebooks/04_inference_tp_decode) |
 | Tune or debug a deployment | [Performance Tuning Reference](chapters/perf_tuning) | [Debugging and Profiling](chapters/debugging_profiling) |
-| Understand host-staged scaleout on PVC/Aurora | [PVC: Scaleout Mechanisms](chapters/pvc_scalability) | [Host-Staged Collectives: Models and Scaling](chapters/host_staging_scaling) |
+| Understand host-staged scaleout on PVC/Aurora | [PVC: Scaleout Mechanisms](chapters/pvc_scalability) | [Host-Staged Collectives: Mechanisms and Scaling](chapters/host_staging_scaling) |
+| Scale training or MoE to 1000+ Aurora nodes | [Aurora at Scale](chapters/aurora_large_scale) | [Host-Staged Collectives §6-7](chapters/host_staging_scaling) |
 | Integrate oneCCL from C++ / SYCL | [Native C++ / SYCL Integration](chapters/native_cpp_api) | [Performance Tuning Reference](chapters/perf_tuning) |
 
 The main path is:
